@@ -1,0 +1,35 @@
+name: .NET Tests
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            6.0.x
+            10.0.x
+
+      - name: Build StockSharp.slnx (Windows only)
+        if: matrix.os == 'windows-latest'
+        run: dotnet build StockSharp.slnx --configuration Release
+
+      - name: Build
+        run: dotnet build StockSharp_Tests.slnx --configuration Release
+
+      - name: Run tests
+        run: dotnet test StockSharp_Tests.slnx --no-build --configuration Release

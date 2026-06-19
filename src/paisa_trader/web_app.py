@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from .config import BrokerConfig, DEFAULT_SYMBOLS
+from .intelligence import FilterConfig
+from .replay import ReplayConfig, ReplayEngine
+
+
+def create_app(config: ReplayConfig | None = None) -> FastAPI:
+    cfg = config or ReplayConfig(symbols=DEFAULT_SYMBOLS[:3])
+    engine = ReplayEngine(cfg)
+    static_dir = Path(__file__).resolve().parent / "web_static"
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        await engine.prepare()
+        task = asyncio.create_task(engine.run_forever())
+        try:
+            yield
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    app = FastAPI(title="Paisa Intraday Replay", lifespan=lifespan)
+    app.state.engine = engine
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+    @app.get("/")
+    async def index():
+        return FileResponse(static_dir / "index.html")
+
+    @app.get("/api/state")
+    async def state():
+        return JSONResponse(await engine.state())
+
+    @app.get("/api/ai-snapshot")
+    async def ai_snapshot():
+        current = await engine.state()
+        return JSONResponse(current["ai_snapshot"])
+
+    @app.post("/api/control/{action}")
+    async def control(action: str):
+        if action == "pause":
+            await engine.pause()
+        elif action == "resume":
+            await engine.resume()
+        elif action == "reset":
+            await engine.reset()
+        else:
+            return JSONResponse({"error": f"unknown action {action}"}, status_code=400)
+        return JSONResponse(await engine.state())
+
+    @app.websocket("/ws")
+    async def websocket(websocket: WebSocket):
+        await websocket.accept()
+        queue = engine.subscribe()
+        try:
+            await websocket.send_json(await engine.state())
+            while True:
+                text = await queue.get()
+                await websocket.send_text(text)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            engine.unsubscribe(queue)
+
+    return app
+
+
+def build_replay_config(
+    symbols: list[str] | None = None,
+    period: str = "5d",
+    interval: str = "5m",
+    strategy: str = "ma-cross",
+    tick_seconds: float = 1.0,
+    loop: bool = True,
+    force_refresh: bool = True,
+    use_intelligence_filter: bool = True,
+    initial_cash: float = 100_000.0,
+    spread_bps: float = 3.0,
+    slippage_bps: float = 2.0,
+    max_position_pct: float = 0.20,
+    min_volume: float = 100_000.0,
+    max_spread_bps: float = 25.0,
+    min_signal_score: float = 55.0,
+) -> ReplayConfig:
+    return ReplayConfig(
+        symbols=symbols or DEFAULT_SYMBOLS[:3],
+        period=period,
+        interval=interval,
+        strategy=strategy,
+        tick_seconds=tick_seconds,
+        loop=loop,
+        force_refresh=force_refresh,
+        use_intelligence_filter=use_intelligence_filter,
+        broker=BrokerConfig(
+            initial_cash=initial_cash,
+            spread_bps=spread_bps,
+            slippage_bps=slippage_bps,
+            max_position_pct=max_position_pct,
+        ),
+        filters=FilterConfig(
+            min_volume=min_volume,
+            max_spread_bps=max_spread_bps,
+            min_signal_score=min_signal_score,
+        ),
+    )

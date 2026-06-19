@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paisa Intraday Replay</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="mark">PT</div>
+        <div>
+          <h1>Paisa Trader</h1>
+          <p>Autonomous intraday replay</p>
+        </div>
+      </div>
+      <div class="panel compact">
+        <div class="label">Connection</div>
+        <div id="connection" class="pill warn">connecting</div>
+      </div>
+      <div class="panel controls">
+        <button id="pauseBtn">Pause</button>
+        <button id="resumeBtn">Resume</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+      <div class="panel">
+        <h2>Run Config</h2>
+        <dl id="configList"></dl>
+      </div>
+      <div class="panel">
+        <h2>AI Snapshot</h2>
+        <a class="button-link" href="/api/ai-snapshot" target="_blank">Open JSON</a>
+        <button id="copySnapshot">Copy JSON</button>
+      </div>
+    </aside>
+
+    <main>
+      <section class="topbar">
+        <div>
+          <h2>Streaming historical market as live paper environment</h2>
+          <p id="clock">Waiting for replay...</p>
+        </div>
+        <div class="top-actions">
+          <span id="runningPill" class="pill">unknown</span>
+        </div>
+      </section>
+
+      <section class="metrics">
+        <div class="metric"><span>Equity</span><strong id="equity">--</strong></div>
+        <div class="metric"><span>Cash</span><strong id="cash">--</strong></div>
+        <div class="metric"><span>Return</span><strong id="returnPct">--</strong></div>
+        <div class="metric"><span>Trades</span><strong id="tradeCount">--</strong></div>
+        <div class="metric"><span>Costs</span><strong id="totalCosts">--</strong></div>
+        <div class="metric"><span>Replay Progress</span><strong id="progressPct">--</strong></div>
+      </section>
+
+      <section class="grid">
+        <article class="card wide">
+          <div class="card-head">
+            <h3>Price And Algo State</h3>
+            <select id="symbolSelect"></select>
+          </div>
+          <canvas id="priceChart" width="900" height="320"></canvas>
+        </article>
+
+        <article class="card wide">
+          <h3>Paper Equity Curve</h3>
+          <canvas id="equityChart" width="900" height="220"></canvas>
+        </article>
+
+        <article class="card">
+          <h3>Next Move</h3>
+          <div id="signalBox" class="signal"></div>
+        </article>
+
+        <article class="card">
+          <h3>Paper Positions</h3>
+          <table>
+            <thead><tr><th>Symbol</th><th>Qty</th><th>Target</th><th>Close</th></tr></thead>
+            <tbody id="positionsBody"></tbody>
+          </table>
+        </article>
+
+        <article class="card wide">
+          <h3>Activity Log</h3>
+          <div id="activity" class="activity"></div>
+        </article>
+
+        <article class="card">
+          <h3>Indicators</h3>
+          <table>
+            <tbody id="indicatorBody"></tbody>
+          </table>
+        </article>
+
+        <article class="card">
+          <h3>Estimated Depth</h3>
+          <p class="note">Synthetic from candles. Not exchange DOM.</p>
+          <table>
+            <thead><tr><th>L</th><th>Side</th><th>Price</th><th>Qty</th></tr></thead>
+            <tbody id="depthBody"></tbody>
+          </table>
+        </article>
+
+        <article class="card wide">
+          <h3>Recent Paper Fills</h3>
+          <table>
+            <thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Costs</th></tr></thead>
+            <tbody id="fillsBody"></tbody>
+          </table>
+        </article>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

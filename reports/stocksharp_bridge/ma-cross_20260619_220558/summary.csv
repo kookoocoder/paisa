@@ -1,0 +1,4 @@
+symbol,strategy,initial_cash,final_equity,total_return_pct,max_drawdown_pct,sharpe_like_daily,trades,total_costs
+RELIANCE.NS,ma-cross,100000.0,98144.25,-1.8557,-1.8939,-4.5089,2,6.21
+TCS.NS,ma-cross,100000.0,100000.0,0.0,0.0,0.0,0,0.0
+INFY.NS,ma-cross,100000.0,99331.64,-0.6684,-2.6131,-0.7444,2,6.9

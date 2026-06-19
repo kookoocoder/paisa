@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paisa-trader"
+version = "0.1.0"
+description = "No-demat India intraday research harness using yfinance, NSE reports, and a simulated broker."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0",
+  "pandas>=2.2",
+  "requests>=2.32",
+  "yfinance>=0.2.50",
+  "pyarrow>=16.0",
+  "tabulate>=0.9",
+  "fastapi>=0.115",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+dashboard = [
+  "streamlit>=1.40",
+]
+
+[project.scripts]
+paisa = "paisa_trader.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"paisa_trader" = ["web_static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
