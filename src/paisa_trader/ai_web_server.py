@@ -25,6 +25,7 @@ from .ai_harness.prediction_tracker import (
     settle_due_predictions,
 )
 from .broker import SimulatedBroker
+from .calibration import ConfidenceCalibrator
 from .config import AIHarnessConfig, BrokerConfig, DEFAULT_SYMBOLS
 from .data import CandleRequest, download_candles, load_candles
 from .intelligence import FilterConfig, build_market_snapshot, enrich_indicators
@@ -49,8 +50,14 @@ class AIReplayEngine:
         self.config = config
         self.broker = SimulatedBroker(config.broker)
         self.runner: ModelRunner = runner_from_config(config.ai)
+        self.calibrator = (
+            ConfidenceCalibrator.load(_calibration_path(config.ai.calibration_save_path))
+            if config.ai.calibration_enabled
+            else None
+        )
         self.router = DecisionRouter(
-            DecisionRouterConfig(config.ai.decision_min_confidence, config.ai.position_size_pct)
+            DecisionRouterConfig(config.ai.decision_min_confidence, config.ai.position_size_pct),
+            calibrator=self.calibrator,
         )
         self._provided_candles = candles_by_symbol
         self._candles: dict[str, pd.DataFrame] = {}
@@ -187,10 +194,10 @@ class AIReplayEngine:
                 recent_fills=[_jsonable(asdict(fill)) for fill in self.broker.fills[-10:]],
                 total_trades=len(self.broker.fills),
             )
-            settle_due_predictions(self._decisions, symbol, snapshot)
+            settle_due_predictions(self._decisions, symbol, snapshot, calibrator=self.calibrator)
             context = prediction_context(self._decisions, symbol, idx)
 
-        system, user = build_messages(snapshot, context)
+        system, user = build_messages(snapshot, context, self.calibrator)
         try:
             raw = await self.runner.run(system, user)
             decision = parse_trade_decision(raw)
@@ -317,7 +324,18 @@ class AIReplayEngine:
             "symbols": {symbol: self._symbol_state_unlocked(symbol) for symbol in self.config.symbols},
             "ai_decisions": self._decisions[-100:],
             "prediction_stats": prediction_stats(self._decisions),
+            "calibration": self._calibration_state(),
             "events": self._events[-100:],
+        }
+
+    def _calibration_state(self) -> dict[str, Any]:
+        if self.calibrator is None:
+            return {"enabled": False, "stats": [], "ece": 0.0, "active_min_confidence": self.config.ai.decision_min_confidence}
+        return {
+            "enabled": True,
+            "stats": self.calibrator.calibration_stats(),
+            "ece": round(self.calibrator.expected_calibration_error(), 4),
+            "active_min_confidence": round(self.calibrator.adjusted_threshold(self.config.ai.decision_min_confidence), 4),
         }
 
     def _open_positions_unlocked(self) -> list[dict[str, Any]]:
@@ -454,6 +472,10 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, list):
         return [_jsonable(item) for item in value]
     return value
+
+
+def _calibration_path(path: Path) -> Path:
+    return path if path.is_absolute() else Path.cwd() / path
 
 
 def _model_explanation(provider: str, local_url: str = "") -> str:

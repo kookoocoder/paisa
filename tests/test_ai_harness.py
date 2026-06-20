@@ -10,12 +10,14 @@ from paisa_trader.ai_harness.decision_parser import TradeDecision, parse_trade_d
 from paisa_trader.ai_harness.decision_router import DecisionRouter
 from paisa_trader.ai_harness.model_runner import LMStudioRunner, MockRunner, ModelRunnerConfig, runner_from_config
 from paisa_trader.ai_harness.prediction_tracker import (
+    extended_prediction_context,
     prediction_context,
     prediction_stats,
     prepare_future_predictions,
     settle_due_predictions,
 )
 from paisa_trader.broker import SimulatedBroker
+from paisa_trader.calibration import ConfidenceCalibrator
 from paisa_trader.config import AIHarnessConfig, BrokerConfig
 from paisa_trader.intelligence import FilterConfig, build_market_snapshot, enrich_indicators
 
@@ -139,7 +141,43 @@ def test_prediction_tracker_settles_horizon_forecasts():
 
     assert {item["horizon_bars"]: item["result"] for item in record["future_predictions"]} == {1: "HIT", 3: "HIT"}
     assert prediction_stats(decisions)["hits"] == 2
-    assert prediction_context(decisions, "TEST.NS", first.bar_index + 1)["agreement_signal"] == "PAST_FORECASTS_AGREE_UP"
+    context = prediction_context(decisions, "TEST.NS", first.bar_index + 1)
+    assert context["agreement_signal"] == "PAST_FORECASTS_AGREE_UP"
+    assert context["by_horizon"]["+5m"]["hit"] == 1
+    assert context["rolling"]["last_20"]["n"] == 2
+
+
+def test_prediction_tracker_records_calibration_on_settlement():
+    candles = sample_candles(rows=62)
+    first = build_market_snapshot("TEST.NS", enrich_indicators(candles.iloc[:60]), 0.0, FilterConfig())
+    predictions = prepare_future_predictions([FuturePrediction(1, "+5m", "UP", 0.7)], first.bar_index, first, candles)
+    record = {"symbol": "TEST.NS", "timestamp": first.timestamp.isoformat(), "future_predictions": predictions}
+    current = build_market_snapshot("TEST.NS", enrich_indicators(candles.iloc[:61]), 0.0, FilterConfig())
+    calibrator = ConfidenceCalibrator()
+
+    settle_due_predictions([record], "TEST.NS", current, calibrator=calibrator)
+
+    assert calibrator.calibration_stats()[0]["n"] == 1
+
+
+def test_extended_prediction_context_groups_by_regime_and_window():
+    decisions = [
+        {
+            "symbol": "TEST.NS",
+            "future_predictions": [
+                {"result": "HIT", "horizon_label": "+5m", "regime": "RANGE", "pnl_after_costs": 10.0},
+                {"result": "MISS", "horizon_label": "+15m", "regime": "TREND_UP", "pnl_after_costs": -5.0},
+                {"result": "NEUTRAL", "horizon_label": "+5m", "regime": "RANGE", "pnl_after_costs": 0.0},
+            ],
+        }
+    ]
+
+    context = extended_prediction_context(decisions, "TEST.NS", [2])
+
+    assert context["overall"] == {"hit": 1, "miss": 1, "rate": 0.5}
+    assert context["by_regime"]["RANGE"] == {"rate": 1.0, "n": 1}
+    assert context["rolling"]["last_2"] == {"rate": 0.5, "n": 2}
+    assert context["net_pnl_per_trade"] == 2.5
 
 
 def test_decision_router_blocks_low_confidence_buy():

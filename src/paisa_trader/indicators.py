@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 import numpy as np
 import pandas as pd
+
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 def sma(series: pd.Series, window: int) -> pd.Series:
@@ -106,6 +111,76 @@ def stochastic(
 def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
     direction = np.sign(close.astype(float).diff()).fillna(0)
     return (direction * volume.astype(float)).cumsum()
+
+
+def session_phase(timestamp: pd.Timestamp) -> dict[str, bool | float | int]:
+    """
+    Returns NSE session phase features for a given bar timestamp.
+
+    Args:
+        timestamp: Bar timestamp. Timezone-aware values are converted to IST;
+            naive values are treated as already being in IST.
+
+    Returns:
+        Dict containing open/close phase flags, linear session progress, and
+        minutes elapsed since the 09:15 IST open.
+
+    Example:
+        ``session_phase(pd.Timestamp("2024-01-01 10:00", tz="Asia/Kolkata"))``
+        returns a mid-session progress value with both phase flags false.
+    """
+    ts = pd.Timestamp(timestamp)
+    ts = ts.tz_localize(IST) if ts.tzinfo is None else ts.tz_convert(IST)
+
+    minutes_since_open = (ts.hour * 60 + ts.minute) - (9 * 60 + 15)
+    session_minutes = 375
+    if minutes_since_open < 0 or minutes_since_open > session_minutes:
+        return {
+            "session_phase_open": False,
+            "session_phase_close": False,
+            "session_progress": 0.5,
+            "minutes_since_open": int(minutes_since_open),
+        }
+
+    progress = max(0.0, min(1.0, minutes_since_open / session_minutes))
+    return {
+        "session_phase_open": minutes_since_open < 30,
+        "session_phase_close": minutes_since_open >= session_minutes - 90,
+        "session_progress": float(progress),
+        "minutes_since_open": int(minutes_since_open),
+    }
+
+
+def lag_returns(closes: pd.Series, lags: list[int] | None = None) -> dict[str, float]:
+    """
+    Compute simple percentage returns over past N bars.
+
+    Args:
+        closes: Series of close prices, most recent last.
+        lags: Lookback periods to compute. Defaults to [1, 3, 5].
+
+    Returns:
+        Dict like ``{"return_lag_1": -0.0023, "return_lag_3": 0.0041}``.
+
+    Example:
+        ``lag_returns(pd.Series([100, 101]), [1])`` returns
+        ``{"return_lag_1": 0.01}``.
+    """
+    lags = [1, 3, 5] if lags is None else lags
+    close = closes.astype(float).dropna()
+    values: dict[str, float] = {}
+    for lag in lags:
+        key = f"return_lag_{lag}"
+        if len(close) <= lag:
+            values[key] = 0.0
+            continue
+        previous = float(close.iloc[-lag - 1])
+        current = float(close.iloc[-1])
+        if previous == 0:
+            values[key] = 0.0
+            continue
+        values[key] = float(np.clip((current - previous) / previous, -0.10, 0.10))
+    return values
 
 
 def session_vwap(df: pd.DataFrame) -> pd.Series:

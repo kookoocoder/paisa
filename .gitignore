@@ -10,4 +10,5 @@ output/
 # Generated market data and reports.
 data/raw/
 data/processed/
+data/calibration.json
 reports/

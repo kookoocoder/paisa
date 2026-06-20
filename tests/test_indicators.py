@@ -4,8 +4,10 @@ from paisa_trader.indicators import (
     atr,
     bollinger_bands,
     donchian_channels,
+    lag_returns,
     obv,
     rsi,
+    session_phase,
     session_vwap,
     stochastic,
     true_range,
@@ -73,3 +75,44 @@ def test_volume_and_range_indicators_are_bounded_or_monotonic():
     assert stoch_d.dropna().between(0, 100).all()
     assert (dc_high.dropna() >= dc_low.dropna()).all()
     assert obv_values.iloc[-1] > obv_values.iloc[1]
+
+
+def test_session_phase_open_period_from_ist_timestamp():
+    phase = session_phase(pd.Timestamp("2024-01-01 09:30", tz="Asia/Kolkata"))
+
+    assert phase["session_phase_open"] is True
+    assert phase["session_phase_close"] is False
+    assert phase["minutes_since_open"] == 15
+    assert 0.0 <= phase["session_progress"] <= 1.0
+
+
+def test_session_phase_mid_period_from_utc_timestamp():
+    phase = session_phase(pd.Timestamp("2024-01-01 06:00", tz="UTC"))
+
+    assert phase["session_phase_open"] is False
+    assert phase["session_phase_close"] is False
+    assert phase["minutes_since_open"] == 135
+    assert 0.3 < phase["session_progress"] < 0.4
+
+
+def test_session_phase_close_period():
+    phase = session_phase(pd.Timestamp("2024-01-01 14:30", tz="Asia/Kolkata"))
+
+    assert phase["session_phase_open"] is False
+    assert phase["session_phase_close"] is True
+    assert phase["minutes_since_open"] == 315
+
+
+def test_session_phase_outside_session_uses_neutral_progress():
+    phase = session_phase(pd.Timestamp("2024-01-01 16:00", tz="Asia/Kolkata"))
+
+    assert phase["session_phase_open"] is False
+    assert phase["session_phase_close"] is False
+    assert phase["session_progress"] == 0.5
+
+
+def test_lag_returns_are_nan_safe_and_clipped():
+    values = lag_returns(pd.Series([100.0, 90.0, 300.0]), [1, 3])
+
+    assert values["return_lag_1"] == 0.10
+    assert values["return_lag_3"] == 0.0

@@ -17,6 +17,7 @@ from .indicators import (
     macd,
     obv,
     roc,
+    session_phase,
     rolling_volatility,
     rsi,
     session_vwap,
@@ -33,6 +34,55 @@ class FilterConfig:
     min_signal_score: float = 55.0
 
 
+REGIME_WEIGHTS = {
+    "TREND_UP": {
+        "trend": 0.40,
+        "momentum": 0.35,
+        "mean_reversion": 0.05,
+        "participation": 0.15,
+        "volatility": 0.05,
+    },
+    "TREND_DOWN": {
+        "trend": 0.40,
+        "momentum": 0.35,
+        "mean_reversion": 0.05,
+        "participation": 0.15,
+        "volatility": 0.05,
+    },
+    "RANGE": {
+        "trend": 0.10,
+        "momentum": 0.10,
+        "mean_reversion": 0.50,
+        "participation": 0.20,
+        "volatility": 0.10,
+    },
+    "HIGH_VOL": {
+        "trend": 0.20,
+        "momentum": 0.20,
+        "mean_reversion": 0.10,
+        "participation": 0.15,
+        "volatility": 0.35,
+    },
+    "LOW_LIQUIDITY": {
+        "trend": 0.25,
+        "momentum": 0.25,
+        "mean_reversion": 0.20,
+        "participation": 0.25,
+        "volatility": 0.05,
+    },
+    "UNKNOWN": {
+        "trend": 0.35,
+        "momentum": 0.25,
+        "mean_reversion": 0.15,
+        "participation": 0.15,
+        "volatility": 0.10,
+    },
+}
+
+for regime_name, weights in REGIME_WEIGHTS.items():
+    assert abs(sum(weights.values()) - 1.0) < 1e-9, f"{regime_name} weights must sum to 1.0"
+
+
 def enrich_indicators(candles: pd.DataFrame) -> pd.DataFrame:
     out = candles.copy().sort_values("timestamp").reset_index(drop=True)
     close = out["close"].astype(float)
@@ -42,6 +92,8 @@ def enrich_indicators(candles: pd.DataFrame) -> pd.DataFrame:
 
     out["return_1"] = close.pct_change()
     out["return_5"] = close.pct_change(5)
+    for lag in [1, 3, 5]:
+        out[f"return_lag_{lag}"] = close.pct_change(lag).replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(-0.10, 0.10)
     out["log_return_1"] = np.log(close / close.shift())
     out["sma_10"] = sma(close, 10)
     out["sma_20"] = sma(close, 20)
@@ -75,6 +127,8 @@ def enrich_indicators(candles: pd.DataFrame) -> pd.DataFrame:
     out["relative_volume"] = volume / out["volume_sma_20"].replace(0, np.nan)
     out["volume_score"] = ((out["relative_volume"] - 0.5) / 2).clip(0, 1)
     out["estimated_spread_bps"] = (out["range_pct"].rolling(5, min_periods=1).mean().clip(lower=0.03) * 4).clip(3, 80)
+    session_features = out["timestamp"].map(session_phase).apply(pd.Series)
+    out = pd.concat([out, session_features], axis=1)
     factors = out.apply(_factor_scores_from_row, axis=1, result_type="expand")
     out = pd.concat([out, factors], axis=1)
     out["regime"] = out.apply(_market_regime_from_row, axis=1)
@@ -217,17 +271,18 @@ def score_next_move(enriched: pd.DataFrame, filter_cfg: FilterConfig | None = No
     filter_cfg = filter_cfg or FilterConfig()
     last = enriched.iloc[-1]
     factor_scores = _factor_scores_from_row(last)
+    regime = str(last.get("regime") or _market_regime_from_row(last))
+    active_weights = REGIME_WEIGHTS.get(regime, REGIME_WEIGHTS["UNKNOWN"])
     weighted = (
-        0.35 * factor_scores["trend_score"]
-        + 0.25 * factor_scores["momentum_score"]
-        + 0.15 * factor_scores["mean_reversion_score"]
-        + 0.15 * factor_scores["participation_score"]
-        + 0.10 * factor_scores["volatility_score"]
+        active_weights["trend"] * factor_scores["trend_score"]
+        + active_weights["momentum"] * factor_scores["momentum_score"]
+        + active_weights["mean_reversion"] * factor_scores["mean_reversion_score"]
+        + active_weights["participation"] * factor_scores["participation_score"]
+        + active_weights["volatility"] * factor_scores["volatility_score"]
     )
     score = max(0.0, min(100.0, 50.0 + weighted * 50.0))
     volume_ok = float(last.get("volume", 0) or 0) >= filter_cfg.min_volume
     spread_ok = float(last.get("estimated_spread_bps", 999) or 999) <= filter_cfg.max_spread_bps
-    regime = str(last.get("regime") or _market_regime_from_row(last))
 
     if score >= 62 and volume_ok and spread_ok:
         direction = "bullish"
@@ -258,6 +313,8 @@ def score_next_move(enriched: pd.DataFrame, filter_cfg: FilterConfig | None = No
         "disqualifiers": disqualifiers,
         "factor_scores": {key: round(float(value), 4) for key, value in factor_scores.items()},
         "regime": regime,
+        "active_regime": regime,
+        "active_weights": active_weights.copy(),
         "passes_filters": volume_ok and spread_ok,
         "paper_trade_candidate": (
             action != "no_trade"
@@ -338,9 +395,22 @@ def ai_market_snapshot(
         "relative_volume",
         "volume_score",
         "estimated_spread_bps",
+        "session_phase_open",
+        "session_phase_close",
+        "session_progress",
+        "minutes_since_open",
+        "return_lag_1",
+        "return_lag_3",
+        "return_lag_5",
     ]
     indicators = {
-        key: (None if pd.isna(last.get(key)) else round(float(last.get(key)), 6))
+        key: (
+            None
+            if pd.isna(last.get(key))
+            else bool(last.get(key))
+            if key in {"session_phase_open", "session_phase_close"}
+            else round(float(last.get(key)), 6)
+        )
         for key in indicator_keys
     }
     payload = snapshot.to_dict()
@@ -418,6 +488,13 @@ def build_market_snapshot(
         atr_14=_optional_float(last.get("atr_14")),
         volume_ratio=_optional_float(last.get("relative_volume")),
         volume_score=_float(last.get("volume_score"), 0.0),
+        session_phase_open=bool(last.get("session_phase_open", False)),
+        session_phase_close=bool(last.get("session_phase_close", False)),
+        session_progress=_float(last.get("session_progress"), 0.5),
+        minutes_since_open=int(_float(last.get("minutes_since_open"), 0.0)),
+        return_lag_1=_float(last.get("return_lag_1"), 0.0),
+        return_lag_3=_float(last.get("return_lag_3"), 0.0),
+        return_lag_5=_float(last.get("return_lag_5"), 0.0),
         bid=best_bid,
         ask=best_ask,
         spread_pct=((best_ask - best_bid) / max(_float(last.get("close"), 0.0), 0.01)) * 100,
@@ -433,6 +510,7 @@ def build_market_snapshot(
             "disqualifiers": signal["disqualifiers"],
             "factor_scores": signal.get("factor_scores", {}),
             "regime": signal.get("regime", str(last.get("regime", "UNKNOWN"))),
+            "active_weights": signal.get("active_weights", {}),
         },
         market_regime=str(signal.get("regime", last.get("regime", "UNKNOWN"))),
         factor_scores={key: float(value) for key, value in signal.get("factor_scores", {}).items()},

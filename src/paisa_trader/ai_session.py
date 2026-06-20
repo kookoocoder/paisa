@@ -22,6 +22,7 @@ from .ai_harness.prediction_tracker import (
     settle_due_predictions,
 )
 from .broker import SimulatedBroker
+from .calibration import ConfidenceCalibrator
 from .config import AIHarnessConfig, BrokerConfig, REPORTS_DIR, ensure_dirs
 from .data import CandleRequest, download_candles, load_candles
 from .intelligence import FilterConfig, build_market_snapshot, enrich_indicators
@@ -55,11 +56,17 @@ async def run_ai_backtest(
     filter_cfg = filter_cfg or FilterConfig()
     ai_cfg = ai_cfg or AIHarnessConfig(symbols=symbols)
     runner = runner or runner_from_config(ai_cfg)
+    calibrator = (
+        ConfidenceCalibrator.load(_calibration_path(ai_cfg.calibration_save_path))
+        if ai_cfg.calibration_enabled
+        else None
+    )
     router = DecisionRouter(
         DecisionRouterConfig(
             decision_min_confidence=ai_cfg.decision_min_confidence,
             position_size_pct=ai_cfg.position_size_pct,
-        )
+        ),
+        calibrator=calibrator,
     )
     session_dir = _new_session_dir()
 
@@ -92,9 +99,9 @@ async def run_ai_backtest(
                 recent_fills=[_jsonable(asdict(fill)) for fill in broker.fills[-10:]],
                 total_trades=len(broker.fills),
             )
-            settle_due_predictions(decisions, symbol, snapshot)
+            settle_due_predictions(decisions, symbol, snapshot, calibrator=calibrator)
             context = prediction_context(decisions, symbol, snapshot.bar_index)
-            system, user = build_messages(snapshot, context)
+            system, user = build_messages(snapshot, context, calibrator)
             decision = await _call_model(runner, system, user)
             route = router.route(decision, snapshot, broker)
             record = _decision_record(idx, snapshot, decision, route, candles)
@@ -113,7 +120,7 @@ async def run_ai_backtest(
             }
         )
 
-    summary = _summary(symbols, broker_cfg.initial_cash, broker, latest_prices, decisions)
+    summary = _summary(symbols, broker_cfg.initial_cash, broker, latest_prices, decisions, calibrator, ai_cfg.decision_min_confidence)
     (session_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (session_dir / "equity_curve.json").write_text(json.dumps(equity_curve, indent=2), encoding="utf-8")
     write_ai_session_report(session_dir)
@@ -200,6 +207,10 @@ def _new_session_dir() -> Path:
     return directory
 
 
+def _calibration_path(path: Path) -> Path:
+    return path if path.is_absolute() else Path.cwd() / path
+
+
 def _decision_record(
     bar_index: int,
     snapshot: Any,
@@ -239,6 +250,8 @@ def _summary(
     broker: SimulatedBroker,
     latest_prices: dict[str, float],
     decisions: list[dict[str, Any]],
+    calibrator: ConfidenceCalibrator | None = None,
+    base_confidence_threshold: float = 0.65,
 ) -> dict[str, Any]:
     final_equity = broker.mark_to_market(latest_prices)
     accepted = sum(1 for item in decisions if item["route_accepted"])
@@ -254,6 +267,18 @@ def _summary(
         "cash": round(broker.cash, 2),
         "positions": dict(broker.positions),
         "prediction_stats": prediction_stats(decisions),
+        "calibration": _calibration_summary(calibrator, base_confidence_threshold),
+    }
+
+
+def _calibration_summary(calibrator: ConfidenceCalibrator | None, base_confidence_threshold: float) -> dict[str, Any]:
+    if calibrator is None:
+        return {"enabled": False, "stats": [], "ece": 0.0, "active_min_confidence": base_confidence_threshold}
+    return {
+        "enabled": True,
+        "stats": calibrator.calibration_stats(),
+        "ece": round(calibrator.expected_calibration_error(), 4),
+        "active_min_confidence": round(calibrator.adjusted_threshold(base_confidence_threshold), 4),
     }
 
 

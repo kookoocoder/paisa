@@ -1,0 +1,29 @@
+---
+description: Core Paisa Trader safety, testing, and style invariants
+alwaysApply: true
+---
+
+# Paisa Trader Invariants
+
+## Never Do
+
+- Never introduce lookahead bias: fills happen at next-bar open, never at signal-bar close.
+- Never skip India costs: STT, GST, stamp duty, brokerage, spread, and slippage must be included.
+- Never claim real-time market data; `yfinance` is delayed and depth is synthetic unless explicitly documented otherwise.
+- Never add shorting logic; bearish signals only block or exit long positions.
+- Never hardcode confidence thresholds; read them from config or calibration.
+
+## Always Do
+
+- After editing `src/paisa_trader/indicators.py` or `src/paisa_trader/intelligence.py`, run `pytest tests/test_indicators.py tests/test_intelligence.py -q`.
+- After editing `src/paisa_trader/ai_harness/`, run `pytest tests/test_ai_harness.py -q`.
+- New public functions need type hints and a docstring with Args, Returns, and a short usage example.
+- All signal outputs should expose active regime and active weights for observability.
+- When adding enriched features, also expose them through `MarketSnapshot` and AI prompt output.
+- Use `pathlib.Path` for filesystem paths and keep monetary values in INR.
+
+## Code Style
+
+- Target Python 3.11+ with pytest tests.
+- Prefer dataclasses for structured domain data.
+- Keep module responsibilities separate; do not put ML training logic in `intelligence.py`.

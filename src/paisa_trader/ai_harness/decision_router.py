@@ -6,6 +6,7 @@ from typing import Any
 import pandas as pd
 
 from ..broker import Fill, SimulatedBroker
+from ..calibration import ConfidenceCalibrator
 from ..snapshot import MarketSnapshot
 from .decision_parser import TradeDecision
 
@@ -24,8 +25,9 @@ class RouteResult:
 
 
 class DecisionRouter:
-    def __init__(self, config: DecisionRouterConfig | None = None):
+    def __init__(self, config: DecisionRouterConfig | None = None, calibrator: ConfidenceCalibrator | None = None):
         self.config = config or DecisionRouterConfig()
+        self.calibrator = calibrator
 
     def route(self, decision: TradeDecision, snapshot: MarketSnapshot, broker: SimulatedBroker) -> RouteResult:
         if decision.action == "BUY":
@@ -64,9 +66,15 @@ class DecisionRouter:
             return "BLOCKED: intelligence gate is false"
         if broker.position(snapshot.symbol) > 0:
             return "BLOCKED: already in position"
-        if decision.confidence < self.config.decision_min_confidence:
-            return f"BLOCKED: confidence {decision.confidence:.0%} below threshold"
+        threshold = self._active_confidence_threshold()
+        if decision.confidence < threshold:
+            return f"BLOCKED: confidence {decision.confidence:.0%} below threshold {threshold:.0%}"
         return None
+
+    def _active_confidence_threshold(self) -> float:
+        if self.calibrator is None:
+            return self.config.decision_min_confidence
+        return self.calibrator.adjusted_threshold(self.config.decision_min_confidence)
 
     def _size_position(self, snapshot: MarketSnapshot, broker: SimulatedBroker) -> int:
         equity = broker.mark_to_market({snapshot.symbol: snapshot.close})

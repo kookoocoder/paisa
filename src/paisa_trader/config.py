@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
+CALIBRATION_PATH = DATA_DIR / "calibration.json"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 
 
@@ -55,6 +56,8 @@ class AIHarnessConfig:
     local_url: str = "http://127.0.0.1:1234"
     decision_min_confidence: float = 0.65
     position_size_pct: float = 0.01
+    calibration_enabled: bool = True
+    calibration_save_path: Path = CALIBRATION_PATH
     symbols: list[str] | None = None
     bar_interval_sec: float = 5.0
 
@@ -69,6 +72,9 @@ def load_ai_harness_config(path: Path | None = None) -> AIHarnessConfig:
         return AIHarnessConfig(symbols=DEFAULT_SYMBOLS[:3])
     payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
     section = payload.get("ai_harness", {})
+    calibration_save_path = Path(payload.get("calibration", {}).get("save_path", CALIBRATION_PATH))
+    if not calibration_save_path.is_absolute():
+        calibration_save_path = PROJECT_ROOT / calibration_save_path
     return AIHarnessConfig(
         model_provider=str(section.get("model_provider", "mock")),
         model_name=str(section.get("model_name", section.get("model_provider", "mock"))),
@@ -78,11 +84,13 @@ def load_ai_harness_config(path: Path | None = None) -> AIHarnessConfig:
         local_url=str(section.get("local_url", "http://127.0.0.1:1234")),
         decision_min_confidence=float(section.get("decision_min_confidence", 0.65)),
         position_size_pct=float(section.get("position_size_pct", 0.01)),
+        calibration_enabled=bool(payload.get("calibration", {}).get("enabled", True)),
+        calibration_save_path=calibration_save_path,
         symbols=list(section.get("symbols", DEFAULT_SYMBOLS[:3])),
         bar_interval_sec=float(section.get("bar_interval_sec", 5.0)),
     )
 
 
 def ensure_dirs() -> None:
-    for path in (RAW_DIR, PROCESSED_DIR, REPORTS_DIR):
+    for path in (RAW_DIR, PROCESSED_DIR, REPORTS_DIR, CALIBRATION_PATH.parent):
         path.mkdir(parents=True, exist_ok=True)

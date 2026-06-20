@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..calibration import ConfidenceCalibrator
 from ..snapshot import MarketSnapshot
 
 
@@ -40,7 +41,14 @@ Rules:
 """
 
 
-def build_user_prompt(snapshot: MarketSnapshot, prediction_context: dict | None = None) -> str:
+def build_user_prompt(
+    snapshot: MarketSnapshot,
+    prediction_context: dict | None = None,
+    calibrator: ConfidenceCalibrator | None = None,
+) -> str:
+    if calibrator is not None:
+        prediction_context = dict(prediction_context or {})
+        prediction_context["calibration"] = calibrator.calibration_stats()
     context_text = _prediction_context_text(prediction_context)
     return f"""{snapshot.to_ai_prompt()}
 {context_text}
@@ -48,8 +56,12 @@ def build_user_prompt(snapshot: MarketSnapshot, prediction_context: dict | None 
 Analyse this snapshot and respond with a TradeDecision JSON object."""
 
 
-def build_messages(snapshot: MarketSnapshot, prediction_context: dict | None = None) -> tuple[str, str]:
-    return SYSTEM_PROMPT, build_user_prompt(snapshot, prediction_context)
+def build_messages(
+    snapshot: MarketSnapshot,
+    prediction_context: dict | None = None,
+    calibrator: ConfidenceCalibrator | None = None,
+) -> tuple[str, str]:
+    return SYSTEM_PROMPT, build_user_prompt(snapshot, prediction_context, calibrator)
 
 
 def _prediction_context_text(prediction_context: dict | None) -> str:
@@ -62,5 +74,10 @@ PAST FORECAST CHECKS
 PAST FORECAST CHECKS
   Current-bar forecasts from earlier model calls: {prediction_context.get("current_forecasts", [])}
   Recent settled accuracy: {prediction_context.get("recent_accuracy", {})}
+  Rolling accuracy: {prediction_context.get("rolling", {})}
+  Accuracy by horizon: {prediction_context.get("by_horizon", {})}
+  Accuracy by regime: {prediction_context.get("by_regime", {})}
+  Net P&L per trade after costs: {prediction_context.get("net_pnl_per_trade", 0.0)}
+  Calibration: {prediction_context.get("calibration", [])}
   Agreement signal: {prediction_context.get("agreement_signal", "NONE")}
 """

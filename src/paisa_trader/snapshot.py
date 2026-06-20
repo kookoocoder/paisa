@@ -28,6 +28,13 @@ class MarketSnapshot:
     atr_14: float | None
     volume_ratio: float | None
     volume_score: float
+    session_phase_open: bool
+    session_phase_close: bool
+    session_progress: float
+    minutes_since_open: int
+    return_lag_1: float
+    return_lag_3: float
+    return_lag_5: float
     bid: float
     ask: float
     spread_pct: float
@@ -73,6 +80,11 @@ class MarketSnapshot:
                 "VOLUME",
                 f"  Current: {self.volume:,} | Ratio vs 20-bar avg: {_fmt(self.volume_ratio)}x",
                 f"  Volume score: {self.volume_score:.2f}/1.0",
+                "",
+                "SESSION AND LAG FEATURES",
+                f"  Session progress: {self.session_progress:.1%} | Minutes since open: {self.minutes_since_open}",
+                f"  Open phase: {self.session_phase_open} | Close phase: {self.session_phase_close}",
+                f"  Lag returns: 1-bar {_fmt_pct(self.return_lag_1)} | 3-bar {_fmt_pct(self.return_lag_3)} | 5-bar {_fmt_pct(self.return_lag_5)}",
                 "",
                 "DEPTH (SYNTHETIC)",
                 f"  Bid: {self.bid:.2f} | Ask: {self.ask:.2f} | Spread: {self.spread_pct:.3f}%",

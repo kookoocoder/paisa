@@ -33,8 +33,14 @@ def test_enrich_indicators_adds_quant_feature_contract():
         "momentum_score",
         "obv_slope_10",
         "participation_score",
+        "return_lag_1",
+        "return_lag_3",
+        "return_lag_5",
         "realized_vol_20",
         "regime",
+        "session_phase_close",
+        "session_phase_open",
+        "session_progress",
         "stoch_k",
         "trend_score",
         "vwap_distance_pct",
@@ -59,6 +65,8 @@ def test_score_next_move_returns_factor_breakdown_and_regime():
         "volatility_score",
     }
     assert signal["regime"] == enriched.iloc[-1]["regime"]
+    assert signal["active_regime"] == enriched.iloc[-1]["regime"]
+    assert set(signal["active_weights"]) == {"trend", "momentum", "mean_reversion", "participation", "volatility"}
     assert all(-1 <= value <= 1 for value in signal["factor_scores"].values())
 
 
@@ -70,6 +78,7 @@ def test_build_market_snapshot_exposes_regime_and_factor_scores():
     assert payload["market_regime"] == enriched.iloc[-1]["regime"]
     assert "trend_score" in payload["factor_scores"]
     assert "factor_scores" in payload["signal_components"]
+    assert "Session progress:" in snapshot.to_ai_prompt()
     assert "Regime:" in snapshot.to_ai_prompt()
 
 
@@ -80,6 +89,24 @@ def test_low_volume_disqualifies_candidate_even_with_directional_score():
     assert signal["passes_filters"] is False
     assert signal["paper_trade_candidate"] is False
     assert "volume below filter" in signal["disqualifiers"]
+
+
+def test_range_regime_uses_mean_reversion_heavy_weights():
+    enriched = enrich_indicators(trend_candles())
+    enriched.loc[enriched.index[-1], "regime"] = "RANGE"
+
+    signal = score_next_move(enriched, FilterConfig())
+
+    assert signal["active_weights"]["mean_reversion"] >= 0.40
+
+
+def test_trend_up_regime_uses_trend_and_momentum_heavy_weights():
+    enriched = enrich_indicators(trend_candles())
+    enriched.loc[enriched.index[-1], "regime"] = "TREND_UP"
+
+    signal = score_next_move(enriched, FilterConfig())
+
+    assert signal["active_weights"]["trend"] + signal["active_weights"]["momentum"] >= 0.70
 import pandas as pd
 
 from paisa_trader.intelligence import FilterConfig, ai_market_snapshot, enrich_indicators, estimate_depth, score_next_move

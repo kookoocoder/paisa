@@ -4,9 +4,11 @@ from typing import Any
 
 import pandas as pd
 
+from ..calibration import ConfidenceCalibrator
 from .decision_parser import FuturePrediction
 
 VALID_RESULTS = {"HIT", "MISS", "NEUTRAL"}
+SETTLED_RESULTS = {"HIT", "MISS"}
 
 
 def prepare_future_predictions(
@@ -44,11 +46,13 @@ def prepare_future_predictions(
             "origin_bar_index": bar_index,
             "origin_timestamp": snapshot.timestamp.isoformat(),
             "origin_close": snapshot.close,
+            "regime": getattr(snapshot, "market_regime", "UNKNOWN"),
             "target_bar_index": bar_index + prediction.horizon_bars,
             "target_timestamp": _target_timestamp(frame, bar_index + prediction.horizon_bars),
             "actual_close": None,
             "actual_return_pct": None,
             "actual_direction": None,
+            "pnl_after_costs": 0.0,
             "result": "PENDING",
         }
         for prediction in prepared
@@ -61,6 +65,7 @@ def settle_due_predictions(
     snapshot: Any,
     *,
     flat_return_threshold_pct: float = 0.02,
+    calibrator: ConfidenceCalibrator | None = None,
 ) -> None:
     for record in decisions:
         if record["symbol"] != symbol:
@@ -76,6 +81,9 @@ def settle_due_predictions(
             prediction["result"] = "NEUTRAL" if prediction["direction"] == "FLAT" else (
                 "HIT" if prediction["direction"] == actual else "MISS"
             )
+            prediction["pnl_after_costs"] = float(prediction.get("pnl_after_costs", 0.0) or 0.0)
+            if calibrator and prediction["result"] in SETTLED_RESULTS:
+                calibrator.record(float(prediction.get("confidence", 0.0) or 0.0), 1 if prediction["result"] == "HIT" else 0)
             if prediction.get("horizon_bars") == 1:
                 record["actual_next_close"] = prediction["actual_close"]
                 record["actual_next_return_pct"] = prediction["actual_return_pct"]
@@ -110,6 +118,7 @@ def prediction_context(decisions: list[dict[str, Any]], symbol: str, bar_index: 
         agreement = f"PAST_FORECASTS_AGREE_{directions[0]}"
     elif directions:
         agreement = "PAST_FORECASTS_CONFLICT"
+    extended = extended_prediction_context(decisions, symbol)
     return {
         "current_forecasts": current_forecasts,
         "recent_accuracy": {
@@ -118,6 +127,59 @@ def prediction_context(decisions: list[dict[str, Any]], symbol: str, bar_index: 
             "hit_rate": round(hits / len(directional), 4) if directional else 0.0,
         },
         "agreement_signal": agreement,
+        **extended,
+    }
+
+
+def extended_prediction_context(
+    decisions: list[dict[str, Any]],
+    symbol: str | None = None,
+    window_sizes: list[int] | None = None,
+) -> dict[str, Any]:
+    """
+    Build rolling accuracy context for settled, directional AI predictions.
+
+    Args:
+        decisions: Decision records containing ``future_predictions``.
+        symbol: Optional symbol filter. Use ``None`` to aggregate all symbols.
+        window_sizes: Rolling windows to compute. Defaults to [20, 50, 100].
+
+    Returns:
+        Dictionary with overall, horizon, rolling, regime, PnL, and agreement
+        summaries.
+
+    Example:
+        ``extended_prediction_context(decisions, "RELIANCE.NS")`` returns
+        recent hit rates split by horizon and market regime.
+    """
+    window_sizes = [20, 50, 100] if window_sizes is None else window_sizes
+    settled = _settled_directional_predictions(decisions, symbol)
+    hits = sum(1 for item in settled if item["result"] == "HIT")
+    misses = len(settled) - hits
+    rolling = {f"last_{size}": _rate_summary(settled[-size:]) for size in window_sizes}
+    by_horizon = {
+        label: _hit_miss_summary([item for item in settled if item.get("horizon_label") == label])
+        for label in ["+5m", "+15m"]
+    }
+    regimes = sorted({str(item.get("regime", "UNKNOWN")) for item in settled})
+    by_regime = {
+        regime: {
+            "rate": _rate_summary([item for item in settled if str(item.get("regime", "UNKNOWN")) == regime])["rate"],
+            "n": _rate_summary([item for item in settled if str(item.get("regime", "UNKNOWN")) == regime])["n"],
+        }
+        for regime in regimes
+    }
+    last_20 = rolling.get("last_20", {"rate": 0.0})["rate"]
+    last_50 = rolling.get("last_50", {"rate": 0.0})["rate"]
+    pnl_items = [float(item.get("pnl_after_costs", 0.0) or 0.0) for item in settled]
+
+    return {
+        "overall": {"hit": hits, "miss": misses, "rate": round(hits / len(settled), 4) if settled else 0.0},
+        "by_horizon": by_horizon,
+        "rolling": rolling,
+        "by_regime": by_regime,
+        "net_pnl_per_trade": round(sum(pnl_items) / len(pnl_items), 4) if pnl_items else 0.0,
+        "rolling_agreement_signal": _rolling_agreement_signal(last_20, last_50),
     }
 
 
@@ -177,3 +239,33 @@ def _forecast_prompt_item(record: dict[str, Any], prediction: dict[str, Any]) ->
 
 def _prediction_result(item: dict[str, Any]) -> str:
     return str(item.get("result", item.get("prediction_result", "")))
+
+
+def _settled_directional_predictions(decisions: list[dict[str, Any]], symbol: str | None) -> list[dict[str, Any]]:
+    return [
+        prediction
+        for record in decisions
+        if symbol is None or record["symbol"] == symbol
+        for prediction in record.get("future_predictions", [])
+        if prediction.get("result") in SETTLED_RESULTS
+    ]
+
+
+def _hit_miss_summary(items: list[dict[str, Any]]) -> dict[str, float | int]:
+    hits = sum(1 for item in items if item.get("result") == "HIT")
+    misses = sum(1 for item in items if item.get("result") == "MISS")
+    total = hits + misses
+    return {"hit": hits, "miss": misses, "rate": round(hits / total, 4) if total else 0.0}
+
+
+def _rate_summary(items: list[dict[str, Any]]) -> dict[str, float | int]:
+    hits = sum(1 for item in items if item.get("result") == "HIT")
+    return {"rate": round(hits / len(items), 4) if items else 0.0, "n": len(items)}
+
+
+def _rolling_agreement_signal(last_20: float, last_50: float) -> str:
+    if last_20 > last_50 + 0.05:
+        return "improving"
+    if last_20 < last_50 - 0.05:
+        return "degrading"
+    return "consistent"
