@@ -7,6 +7,7 @@ __pycache__/
 .playwright-cli/
 output/
 
-# Keep generated sample data/reports visible in this workspace for review,
-# but ignore bulky ad-hoc archives if users expand experiments later.
-data/raw/*.zip
+# Generated market data and reports.
+data/raw/
+data/processed/
+reports/

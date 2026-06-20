@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -364,10 +364,8 @@ def create_app(config: AIWebConfig | None = None) -> FastAPI:
             yield
         finally:
             task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
 
     app = FastAPI(title="Paisa AI Market Intelligence Harness", lifespan=lifespan)
     app.state.engine = engine
@@ -408,7 +406,7 @@ def create_app(config: AIWebConfig | None = None) -> FastAPI:
                 text = await queue.get()
                 await websocket.send_text(text)
         except WebSocketDisconnect:
-            pass
+            return
         finally:
             engine.unsubscribe(queue)
 

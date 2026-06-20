@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -26,10 +26,8 @@ def create_app(config: ReplayConfig | None = None) -> FastAPI:
             yield
         finally:
             task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
 
     app = FastAPI(title="Paisa Intraday Replay", lifespan=lifespan)
     app.state.engine = engine
@@ -70,7 +68,7 @@ def create_app(config: ReplayConfig | None = None) -> FastAPI:
                 text = await queue.get()
                 await websocket.send_text(text)
         except WebSocketDisconnect:
-            pass
+            return
         finally:
             engine.unsubscribe(queue)
 
