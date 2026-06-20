@@ -34,7 +34,7 @@ paisa = "paisa_trader.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"paisa_trader" = ["web_static/*"]
+"paisa_trader" = ["web_static/*", "static/ai_dashboard/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

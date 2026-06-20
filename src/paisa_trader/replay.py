@@ -229,7 +229,23 @@ class ReplayEngine:
         last = enriched.iloc[-1]
         target = max(0.0, min(1.0, float(last.get("target_position", 0.0))))
         next_move = score_next_move(enriched, self.config.filters)
-        snapshot = ai_market_snapshot(symbol, enriched, target, self.config.filters)
+        equity = self.broker.mark_to_market(self._latest_prices)
+        snapshot = ai_market_snapshot(
+            symbol,
+            enriched,
+            target,
+            self.config.filters,
+            active_strategy=self.strategy.name,
+            equity=equity,
+            cash=self.broker.cash,
+            open_positions=[
+                {"symbol": position_symbol, "quantity": quantity}
+                for position_symbol, quantity in self.broker.positions.items()
+                if quantity
+            ],
+            recent_fills=[_jsonable(asdict(fill)) for fill in self.broker.fills[-10:]],
+            total_trades=len(self.broker.fills),
+        )
         recent_candles = enriched.tail(120)
         return {
             "symbol": symbol,
@@ -242,7 +258,7 @@ class ReplayEngine:
             "target_position": target,
             "next_move": next_move,
             "indicators": snapshot["indicators"],
-            "depth": snapshot["synthetic_depth"],
+            "depth": snapshot["depth_levels"],
             "candles": [
                 {
                     "time": pd.Timestamp(row["timestamp"]).isoformat(),

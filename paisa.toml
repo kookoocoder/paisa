@@ -1,0 +1,11 @@
+[ai_harness]
+model_provider = "lmstudio"
+model_name = "auto"
+api_key_env = ""
+temperature = 0.1
+max_tokens = 512
+local_url = "http://127.0.0.1:1234"
+decision_min_confidence = 0.65
+position_size_pct = 0.01
+symbols = ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
+bar_interval_sec = 5

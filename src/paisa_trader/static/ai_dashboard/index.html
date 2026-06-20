@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paisa AI Harness</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Paisa AI</h1>
+        <p id="clock">Waiting for replay...</p>
+      </div>
+      <div class="actions">
+        <select id="symbolSelect"></select>
+        <span id="connection" class="pill warn">connecting</span>
+        <span id="running" class="pill">unknown</span>
+        <button id="pauseBtn">Pause</button>
+        <button id="resumeBtn">Resume</button>
+        <button id="resetBtn">Reset</button>
+      </div>
+    </header>
+
+    <section class="metrics">
+      <article><span>Equity</span><strong id="equity">--</strong><small id="returnPct">--</small></article>
+      <article><span>Forecast Hit Rate</span><strong id="hitRate">--</strong><small id="hitRateDetail">--</small></article>
+      <article><span>Latest Action</span><strong id="latestAction">--</strong><small id="latestActionDetail">--</small></article>
+      <article><span>Model</span><strong id="modelName">--</strong><small id="decisionCount">--</small></article>
+    </section>
+
+    <main>
+      <section class="card chart">
+        <div class="card-head">
+          <h2>Price Context</h2>
+          <p id="symbolDataInfo">Loading symbol data...</p>
+        </div>
+        <canvas id="priceChart" width="980" height="390"></canvas>
+      </section>
+
+      <section class="card latest">
+        <h2>Latest Decision</h2>
+        <div id="latestDecision" class="decision-card muted">Waiting for the first model decision.</div>
+      </section>
+
+      <section class="card wide">
+        <h2>Forecast Log</h2>
+        <div id="predictionTable" class="prediction-table"></div>
+      </section>
+
+      <section class="card wide">
+        <h2>Paper Fills</h2>
+        <table>
+          <thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Costs</th><th>Reason</th></tr></thead>
+          <tbody id="fillsBody"></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .backtest import run_symbol_backtest
 from .bridge import export_stocksharp_package
-from .config import BrokerConfig, DEFAULT_SYMBOLS, ensure_dirs
+from .config import AIHarnessConfig, BrokerConfig, DEFAULT_SYMBOLS, ensure_dirs, load_ai_harness_config
 from .data import CandleRequest, download_candles, load_candles
 from .nse import fetch_equity_bhavcopy, parse_date
 from .report import write_backtest_report
@@ -164,6 +164,88 @@ def cmd_web(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ai_web(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from .ai_web_server import build_ai_web_config, create_app
+
+    ai_cfg = _ai_config_from_args(args)
+    symbols = args.symbols or ai_cfg.symbols or DEFAULT_SYMBOLS[:3]
+    config = build_ai_web_config(
+        symbols=symbols,
+        period=args.period,
+        interval=args.interval,
+        tick_seconds=args.tick_seconds,
+        loop=not args.no_loop,
+        force_refresh=not args.no_refresh,
+        initial_cash=args.initial_cash,
+        spread_bps=args.spread_bps,
+        slippage_bps=args.slippage_bps,
+        max_position_pct=args.max_position_pct,
+        ai_cfg=ai_cfg,
+    )
+    app = create_app(config)
+    print(f"Paisa AI market intelligence harness: http://{args.host}:{args.port}")
+    print("Paper-only AI replay is running. No real broker orders are placed.")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    return 0
+
+
+def cmd_ai_backtest(args: argparse.Namespace) -> int:
+    from .ai_session import run_ai_backtest_sync
+    from .intelligence import FilterConfig
+
+    ai_cfg = _ai_config_from_args(args)
+    symbols = args.symbols or ai_cfg.symbols or DEFAULT_SYMBOLS[:3]
+    broker_cfg = BrokerConfig(
+        initial_cash=args.initial_cash,
+        spread_bps=args.spread_bps,
+        slippage_bps=args.slippage_bps,
+        max_position_pct=args.max_position_pct,
+    )
+    result = run_ai_backtest_sync(
+        symbols,
+        args.period,
+        args.interval,
+        download=args.download,
+        force=args.force,
+        broker_cfg=broker_cfg,
+        filter_cfg=FilterConfig(),
+        ai_cfg=ai_cfg,
+    )
+    print(f"AI session written to {result.report_dir}")
+    print(f"HTML report: {result.report_dir / 'report.html'}")
+    print(result.summary)
+    return 0
+
+
+def cmd_ai_report(args: argparse.Namespace) -> int:
+    from .ai_session import latest_ai_session_dir, write_ai_session_report
+
+    session_dir = Path(args.session_dir) if args.session_dir else latest_ai_session_dir()
+    report = write_ai_session_report(session_dir)
+    print(f"AI report written to {report}")
+    return 0
+
+
+def _ai_config_from_args(args: argparse.Namespace) -> AIHarnessConfig:
+    base = load_ai_harness_config()
+    provider = args.model_provider or base.model_provider
+    default_model = "mock" if provider == "mock" else ("auto" if provider == "lmstudio" else base.model_name)
+    return AIHarnessConfig(
+        model_provider=provider,
+        model_name=args.model_name or default_model,
+        api_key_env=args.api_key_env or base.api_key_env,
+        temperature=args.temperature if args.temperature is not None else base.temperature,
+        max_tokens=args.max_tokens if args.max_tokens is not None else base.max_tokens,
+        local_url=args.local_url or base.local_url,
+        decision_min_confidence=base.decision_min_confidence,
+        position_size_pct=base.position_size_pct,
+        symbols=args.symbols or base.symbols,
+        bar_interval_sec=base.bar_interval_sec,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="paisa", description="No-demat India trading research harness.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -241,6 +323,49 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--slippage-bps", type=float, default=2.0)
     web.add_argument("--max-position-pct", type=float, default=0.20)
     web.set_defaults(func=cmd_web)
+
+    ai_web = sub.add_parser("ai-web", help="Launch AI market intelligence harness dashboard.")
+    ai_web.add_argument("--host", default="127.0.0.1")
+    ai_web.add_argument("--port", type=int, default=8082)
+    ai_web.add_argument("--symbols", nargs="+", default=None)
+    ai_web.add_argument("--period", default="5d")
+    ai_web.add_argument("--interval", default="5m")
+    ai_web.add_argument("--tick-seconds", type=float, default=1.0, help="Seconds between replay bars.")
+    ai_web.add_argument("--no-loop", action="store_true", help="Stop at end of historical window instead of looping.")
+    ai_web.add_argument("--no-refresh", action="store_true", help="Reuse cached candles on startup.")
+    ai_web.add_argument("--initial-cash", type=float, default=100_000.0)
+    ai_web.add_argument("--spread-bps", type=float, default=3.0)
+    ai_web.add_argument("--slippage-bps", type=float, default=2.0)
+    ai_web.add_argument("--max-position-pct", type=float, default=0.20)
+    ai_web.add_argument("--model-provider", choices=["mock", "claude", "openai", "local", "lmstudio"], default=None)
+    ai_web.add_argument("--model-name", default=None)
+    ai_web.add_argument("--api-key-env", default=None)
+    ai_web.add_argument("--local-url", default=None, help="Base URL for local model providers such as LM Studio.")
+    ai_web.add_argument("--temperature", type=float, default=None)
+    ai_web.add_argument("--max-tokens", type=int, default=None)
+    ai_web.set_defaults(func=cmd_ai_web)
+
+    ai_backtest = sub.add_parser("ai-backtest", help="Run AI model over historical bars.")
+    ai_backtest.add_argument("--symbols", nargs="+", default=None)
+    ai_backtest.add_argument("--period", default="5d")
+    ai_backtest.add_argument("--interval", default="5m")
+    ai_backtest.add_argument("--download", action="store_true", help="Download missing data before running.")
+    ai_backtest.add_argument("--force", action="store_true", help="Force data refresh when used with --download.")
+    ai_backtest.add_argument("--initial-cash", type=float, default=100_000.0)
+    ai_backtest.add_argument("--spread-bps", type=float, default=3.0)
+    ai_backtest.add_argument("--slippage-bps", type=float, default=2.0)
+    ai_backtest.add_argument("--max-position-pct", type=float, default=0.20)
+    ai_backtest.add_argument("--model-provider", choices=["mock", "claude", "openai", "local", "lmstudio"], default=None)
+    ai_backtest.add_argument("--model-name", default=None)
+    ai_backtest.add_argument("--api-key-env", default=None)
+    ai_backtest.add_argument("--local-url", default=None, help="Base URL for local model providers such as LM Studio.")
+    ai_backtest.add_argument("--temperature", type=float, default=None)
+    ai_backtest.add_argument("--max-tokens", type=int, default=None)
+    ai_backtest.set_defaults(func=cmd_ai_backtest)
+
+    ai_report = sub.add_parser("ai-report", help="Generate an HTML report for an AI session.")
+    ai_report.add_argument("--session-dir", default=None, help="Session directory. Defaults to latest reports/ai_sessions session.")
+    ai_report.set_defaults(func=cmd_ai_report)
 
     return parser
 
