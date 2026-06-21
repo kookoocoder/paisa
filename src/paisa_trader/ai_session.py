@@ -134,7 +134,9 @@ def run_ai_backtest_sync(*args: Any, **kwargs: Any) -> AIBacktestResult:
 def write_ai_session_report(session_dir: Path | None = None) -> Path:
     directory = session_dir or latest_ai_session_dir()
     summary = _read_json(directory / "summary.json", {})
+    prediction_stats = summary.get("prediction_stats", {})
     decisions = _read_jsonl(directory / "decisions.jsonl")
+    hit_rate_pct = float(prediction_stats.get("hit_rate", 0.0)) * 100
     rows = "\n".join(
         "<tr>"
         f"<td>{escape(str(item.get('timestamp', '')))}</td>"
@@ -156,7 +158,7 @@ def write_ai_session_report(session_dir: Path | None = None) -> Path:
     table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
     th, td {{ border-bottom: 1px solid #dfe4ea; padding: 8px; text-align: left; vertical-align: top; }}
     th {{ background: #f4f6f8; }}
-    .cards {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }}
+    .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 16px 0; }}
     .card {{ border: 1px solid #dfe4ea; border-radius: 8px; padding: 12px; }}
     .card strong {{ display: block; font-size: 22px; margin-top: 6px; }}
   </style>
@@ -164,11 +166,17 @@ def write_ai_session_report(session_dir: Path | None = None) -> Path:
 <body>
   <h1>Paisa AI Session Report</h1>
   <p>Paper-only AI research harness. No real broker execution.</p>
+  {f"<p><strong>Status:</strong> {escape(str(summary.get('status', 'COMPLETE')))} &mdash; {escape(str(summary.get('progress', '')))}</p>" if summary.get('status') else ""}
   <div class="cards">
     <div class="card">Final equity<strong>{summary.get('final_equity', 0):,.2f}</strong></div>
     <div class="card">Return %<strong>{summary.get('total_return_pct', 0):.2f}%</strong></div>
     <div class="card">AI decisions<strong>{summary.get('decisions', 0)}</strong></div>
     <div class="card">Broker fills<strong>{summary.get('fills', 0)}</strong></div>
+    <div class="card">Settled predictions<strong>{prediction_stats.get('settled', 0)}</strong></div>
+    <div class="card">Directional predictions<strong>{prediction_stats.get('directional', 0)}</strong></div>
+    <div class="card">Prediction hit rate<strong>{hit_rate_pct:.1f}%</strong></div>
+    <div class="card">Hits / misses<strong>{prediction_stats.get('hits', 0)} / {prediction_stats.get('misses', 0)}</strong></div>
+    <div class="card">Accepted decisions<strong>{summary.get('accepted_decisions', 0)}</strong></div>
   </div>
   <h2>Recent Decisions</h2>
   <table>

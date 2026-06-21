@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -8,7 +9,7 @@ from pathlib import Path
 from .backtest import run_symbol_backtest
 from .bridge import export_stocksharp_package
 from .config import AIHarnessConfig, BrokerConfig, DEFAULT_SYMBOLS, ensure_dirs, load_ai_harness_config
-from .data import CandleRequest, download_candles, load_candles
+from .data import CandleRequest, download_candles, fetch_upstox_quotes, load_candles
 from .nse import fetch_equity_bhavcopy, parse_date
 from .report import write_backtest_report
 from .shadow import run_shadow_session
@@ -22,10 +23,21 @@ def cmd_symbols(_: argparse.Namespace) -> int:
 
 
 def cmd_download(args: argparse.Namespace) -> int:
-    request = CandleRequest(symbols=args.symbols, period=args.period, interval=args.interval)
+    request = CandleRequest(
+        symbols=args.symbols,
+        period=args.period,
+        interval=args.interval,
+        source=args.source,
+    )
     paths = download_candles(request, force=args.force)
     for symbol, path in paths.items():
         print(f"{symbol}: {path}")
+    return 0
+
+
+def cmd_upstox_quote(args: argparse.Namespace) -> int:
+    quotes = fetch_upstox_quotes(args.symbols, full=not args.ltp)
+    print(json.dumps(quotes, indent=2, sort_keys=True, default=str))
     return 0
 
 
@@ -39,7 +51,12 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     ensure_dirs()
     if args.download:
         download_candles(
-            CandleRequest(symbols=args.symbols, period=args.period, interval=args.interval),
+            CandleRequest(
+                symbols=args.symbols,
+                period=args.period,
+                interval=args.interval,
+                source=args.source,
+            ),
             force=args.force,
         )
     strategy = build_strategy(args.strategy)
@@ -51,7 +68,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     )
     results = []
     for symbol in args.symbols:
-        candles = load_candles(symbol, args.period, args.interval)
+        candles = load_candles(symbol, args.period, args.interval, args.source)
         results.append(run_symbol_backtest(candles, strategy, broker_cfg))
     report_dir = write_backtest_report(results, args.strategy)
     print(f"Report written to {report_dir}")
@@ -64,7 +81,12 @@ def cmd_stocksharp_export(args: argparse.Namespace) -> int:
     ensure_dirs()
     if args.download:
         download_candles(
-            CandleRequest(symbols=args.symbols, period=args.period, interval=args.interval),
+            CandleRequest(
+                symbols=args.symbols,
+                period=args.period,
+                interval=args.interval,
+                source=args.source,
+            ),
             force=args.force,
         )
     strategy = build_strategy(args.strategy)
@@ -80,6 +102,7 @@ def cmd_stocksharp_export(args: argparse.Namespace) -> int:
         args.interval,
         strategy,
         broker_cfg,
+        source=args.source,
     )
     print(f"StockSharp bridge package written to {output_dir}")
     print(f"Manifest: {output_dir / 'manifest.json'}")
@@ -257,8 +280,14 @@ def build_parser() -> argparse.ArgumentParser:
     download.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS)
     download.add_argument("--period", default="6mo")
     download.add_argument("--interval", default="1d")
+    download.add_argument("--source", choices=["yfinance", "upstox"], default="yfinance")
     download.add_argument("--force", action="store_true")
     download.set_defaults(func=cmd_download)
+
+    upstox_quote = sub.add_parser("upstox-quote", help="Fetch current Upstox market quotes.")
+    upstox_quote.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS[:3])
+    upstox_quote.add_argument("--ltp", action="store_true", help="Fetch only last-traded-price data.")
+    upstox_quote.set_defaults(func=cmd_upstox_quote)
 
     bhav = sub.add_parser("nse-bhavcopy", help="Fetch NSE equity bhavcopy for YYYY-MM-DD.")
     bhav.add_argument("--date", required=True)
@@ -268,6 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS[:3])
     backtest.add_argument("--period", default="6mo")
     backtest.add_argument("--interval", default="1d")
+    backtest.add_argument("--source", choices=["yfinance", "upstox"], default="yfinance")
     backtest.add_argument("--strategy", choices=["buy-hold", "ma-cross", "mean-reversion"], default="ma-cross")
     backtest.add_argument("--download", action="store_true", help="Download missing data before backtesting.")
     backtest.add_argument("--force", action="store_true", help="Force data refresh when used with --download.")
@@ -281,6 +311,7 @@ def build_parser() -> argparse.ArgumentParser:
     ss.add_argument("--symbols", nargs="+", default=DEFAULT_SYMBOLS[:3])
     ss.add_argument("--period", default="6mo")
     ss.add_argument("--interval", default="1d")
+    ss.add_argument("--source", choices=["yfinance", "upstox"], default="yfinance")
     ss.add_argument("--strategy", choices=["buy-hold", "ma-cross", "mean-reversion"], default="ma-cross")
     ss.add_argument("--download", action="store_true", help="Download missing data before exporting.")
     ss.add_argument("--force", action="store_true", help="Force data refresh when used with --download.")

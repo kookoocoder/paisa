@@ -65,6 +65,7 @@ def export_stocksharp_package(
     strategy: Strategy,
     broker_cfg: BrokerConfig | None = None,
     output_root: Path | None = None,
+    source: str = "yfinance",
 ) -> Path:
     ensure_dirs()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -76,7 +77,7 @@ def export_stocksharp_package(
     result_files: dict[str, dict[str, str]] = {}
 
     for symbol in symbols:
-        candles = load_candles(symbol, period, interval)
+        candles = load_candles(symbol, period, interval, source)
         result: BacktestResult = run_symbol_backtest(candles, strategy, broker_cfg)
         safe = symbol.replace(".", "_")
 
@@ -107,6 +108,7 @@ def export_stocksharp_package(
         "symbols": symbols,
         "period": period,
         "interval": interval,
+        "source": source,
         "strategy": strategy.name,
         "broker_config": asdict(broker_cfg),
         "files": result_files,

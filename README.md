@@ -5,6 +5,7 @@ No-demat, no-broker-key research harness for Indian market experiments.
 It uses:
 
 - `yfinance` for free/delayed NSE/BSE/index candles.
+- Upstox read-only tokens for broker-backed historical candles and current market quote snapshots.
 - NSE public reports/bhavcopy URLs where available.
 - A simulated broker for paper fills with configurable costs, slippage, latency, and spread.
 - A StockSharp bridge export plus a StockSharp sample paper harness under `StockSharp/Samples/11_PaisaPaperHarness/`.
@@ -21,6 +22,8 @@ python -m pip install -e ".[dev]"
 
 paisa symbols
 paisa download --symbols RELIANCE.NS TCS.NS INFY.NS --period 60d --interval 1d
+paisa download --source upstox --symbols RELIANCE.NS TCS.NS INFY.NS --period 5d --interval 5m
+paisa upstox-quote --symbols RELIANCE.NS TCS.NS INFY.NS
 paisa backtest --symbols RELIANCE.NS TCS.NS INFY.NS --period 60d --interval 1d --strategy ma-cross
 paisa stocksharp-export --symbols RELIANCE.NS TCS.NS INFY.NS --period 60d --interval 1d --strategy ma-cross
 paisa dashboard
@@ -131,6 +134,20 @@ paisa nse-bhavcopy --date 2024-06-03
 
 NSE changes public-report paths over time, so bhavcopy fetch has a fallback URL strategy and will fail loudly with the attempted URLs if the exchange changes its layout.
 The current implementation supports both the old `cm03JUN2024bhav.csv.zip` style archive and the newer UDiFF `BhavCopy_NSE_CM_0_0_0_YYYYMMDD_F_0000.csv.zip` style archive.
+
+## Upstox Data
+
+Create an Upstox Developer app, then generate an Analytics Token from the app dashboard for read-only market data. Keep the API key, API secret, and token out of git.
+
+```bash
+export UPSTOX_ANALYTICS_TOKEN="your-upstox-analytics-token"
+
+paisa download --source upstox --symbols RELIANCE.NS TCS.NS INFY.NS --period 5d --interval 5m --force
+paisa upstox-quote --symbols RELIANCE.NS TCS.NS INFY.NS
+paisa upstox-quote --ltp --symbols RELIANCE.NS
+```
+
+The Upstox source accepts familiar NSE/BSE symbols such as `RELIANCE.NS` and `SBIN.BO`, then resolves them through the Upstox BOD instrument master. Raw Upstox instrument keys like `NSE_EQ|INE002A01018` are also accepted.
 
 ## Strategies
 
