@@ -360,7 +360,7 @@ def ai_market_snapshot(
     filter_cfg = filter_cfg or FilterConfig()
     last = enriched.iloc[-1]
     depth = estimate_depth(last)
-    signal = score_next_move(enriched, filter_cfg)
+    signal = score_next_move(enriched, filter_cfg, symbol=symbol, headlines=headlines)
     snapshot = build_market_snapshot(
         symbol=symbol,
         enriched=enriched,
@@ -606,6 +606,57 @@ def _model_signals(symbol: str, enriched: pd.DataFrame, headlines: list[str] | N
             sentiment_signal = {**sentiment_signal, "error": str(exc)}
 
     return {"ml": ml_signal, "sentiment": sentiment_signal, "arima": arima_signal}
+
+
+def default_headlines(symbol: str) -> list[str]:
+    """Return default FinBERT headline inputs for a symbol.
+
+    Args:
+        symbol: Plain or ``.NS`` suffixed NSE symbol.
+
+    Returns:
+        A short headline list used when no live news feed is configured.
+
+    Example:
+        ``default_headlines("RELIANCE")`` returns one India-market headline.
+    """
+    base = symbol.upper().removesuffix(".NS").removesuffix(".BO")
+    return [f"{base} India NSE equity market outlook and trading sentiment"]
+
+
+def _blend_ensemble_score(base_score: float, models: dict[str, Any]) -> float:
+    score = base_score
+    ml = models.get("ml", {})
+    if "error" not in ml:
+        direction = str(ml.get("direction", "NEUTRAL"))
+        confidence = float(ml.get("confidence", 0.0) or 0.0)
+        if direction == "UP":
+            score += confidence * 12.0
+        elif direction == "DOWN":
+            score -= confidence * 12.0
+    sentiment = models.get("sentiment", {})
+    score += float(sentiment.get("composite", 0.0) or 0.0) * 8.0
+    arima = models.get("arima", {})
+    arima_direction = str(arima.get("direction", "NEUTRAL"))
+    if arima_direction == "UP":
+        score += 4.0
+    elif arima_direction == "DOWN":
+        score -= 4.0
+    return max(0.0, min(100.0, score))
+
+
+def _ensemble_reasons(models: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    ml = models.get("ml", {})
+    if "error" not in ml:
+        reasons.append(f"ML ensemble {ml.get('direction')} @ {float(ml.get('confidence', 0.0)):.0%}")
+    sentiment = models.get("sentiment", {})
+    if sentiment.get("dominant") != "neutral" or float(sentiment.get("composite", 0.0) or 0.0):
+        reasons.append(f"FinBERT {sentiment.get('dominant')} ({float(sentiment.get('composite', 0.0)):+.2f})")
+    arima = models.get("arima", {})
+    if str(arima.get("direction")) in {"UP", "DOWN"}:
+        reasons.append(f"ARIMA {arima.get('direction')}")
+    return reasons
 
 
 def _canonical_candles(enriched: pd.DataFrame) -> pd.DataFrame:

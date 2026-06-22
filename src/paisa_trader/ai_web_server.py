@@ -28,8 +28,8 @@ from .trade_stats import trade_pnl_stats
 from .broker import SimulatedBroker
 from .calibration import ConfidenceCalibrator
 from .config import AIHarnessConfig, BrokerConfig, DEFAULT_SYMBOLS
-from .data import CandleRequest, download_candles, load_candles
-from .intelligence import FilterConfig, build_market_snapshot, enrich_indicators
+from .data import CandleRequest, download_candles, load_candles_cached
+from .intelligence import FilterConfig, build_market_snapshot, default_headlines, enrich_indicators
 from .wavetrail import WaveTrailConfig, build_wavetrail
 
 
@@ -76,14 +76,31 @@ class AIReplayEngine:
 
     async def prepare(self) -> None:
         if self._provided_candles is None:
-            download_candles(
-                CandleRequest(self.config.symbols, self.config.period, self.config.interval),
-                force=self.config.force_refresh,
-            )
-            candles_by_symbol = {
-                symbol: load_candles(symbol, self.config.period, self.config.interval)
-                for symbol in self.config.symbols
-            }
+            missing_symbols: list[str] = []
+            candles_by_symbol: dict[str, pd.DataFrame] = {}
+            for symbol in self.config.symbols:
+                try:
+                    candles_by_symbol[symbol] = await asyncio.to_thread(
+                        load_candles_cached,
+                        symbol,
+                        self.config.period,
+                        self.config.interval,
+                    )
+                except FileNotFoundError:
+                    missing_symbols.append(symbol)
+            if missing_symbols:
+                await asyncio.to_thread(
+                    download_candles,
+                    CandleRequest(missing_symbols, self.config.period, self.config.interval),
+                    self.config.force_refresh,
+                )
+                for symbol in missing_symbols:
+                    candles_by_symbol[symbol] = await asyncio.to_thread(
+                        load_candles_cached,
+                        symbol,
+                        self.config.period,
+                        self.config.interval,
+                    )
         else:
             candles_by_symbol = self._provided_candles
 
@@ -183,20 +200,29 @@ class AIReplayEngine:
             visible = enrich_indicators(frame.iloc[: idx + 1])
             last = visible.iloc[-1]
             self._latest_prices[symbol] = float(last["close"])
-            snapshot = build_market_snapshot(
-                symbol,
-                visible,
-                0.0,
-                self.config.filters,
-                active_strategy="ai-harness",
-                equity=self.broker.mark_to_market(self._latest_prices),
-                cash=self.broker.cash,
-                open_positions=self._open_positions_unlocked(),
-                recent_fills=[_jsonable(asdict(fill)) for fill in self.broker.fills[-10:]],
-                total_trades=len(self.broker.fills),
-            )
-            settle_due_predictions(self._decisions, symbol, snapshot, calibrator=self.calibrator)
-            context = prediction_context(self._decisions, symbol, idx)
+            equity = self.broker.mark_to_market(self._latest_prices)
+            cash = self.broker.cash
+            open_positions = self._open_positions_unlocked()
+            recent_fills = [_jsonable(asdict(fill)) for fill in self.broker.fills[-10:]]
+            total_trades = len(self.broker.fills)
+            decisions = list(self._decisions)
+
+        snapshot = await asyncio.to_thread(
+            build_market_snapshot,
+            symbol,
+            visible,
+            0.0,
+            self.config.filters,
+            active_strategy="ai-harness",
+            equity=equity,
+            cash=cash,
+            open_positions=open_positions,
+            recent_fills=recent_fills,
+            total_trades=total_trades,
+            headlines=default_headlines(symbol),
+        )
+        settle_due_predictions(decisions, symbol, snapshot, calibrator=self.calibrator)
+        context = prediction_context(decisions, symbol, idx)
 
         system, user = build_messages(snapshot, context, self.calibrator)
         try:
@@ -260,8 +286,15 @@ class AIReplayEngine:
         visible = enrich_indicators(frame.iloc[: idx + 1])
         snapshot = self._latest_snapshots.get(symbol)
         if snapshot is None:
-            built = build_market_snapshot(symbol, visible, 0.0, self.config.filters)
-            snapshot = built.to_dict()
+            snapshot = {
+                "symbol": symbol,
+                "warming_up": True,
+                "ml_direction": "NEUTRAL",
+                "ml_confidence": 0.0,
+                "sentiment_label": "neutral",
+                "sentiment_composite": 0.0,
+                "arima_direction": "NEUTRAL",
+            }
         recent_candles = visible.tail(90)
         return {
             "symbol": symbol,
@@ -382,8 +415,11 @@ def create_app(config: AIWebConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        await engine.prepare()
-        task = asyncio.create_task(engine.run_forever())
+        async def _boot() -> None:
+            await engine.prepare()
+            await engine.run_forever()
+
+        task = asyncio.create_task(_boot())
         try:
             yield
         finally:

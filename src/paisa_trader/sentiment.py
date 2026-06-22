@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
+import os
 from typing import Any
 
 
 LOGGER = logging.getLogger(__name__)
 _FINBERT_PIPELINE: Any | None = None
 _FINBERT_FAILED = False
+
+
+def _finbert_timeout_seconds() -> float:
+    return max(1.0, float(os.environ.get("PAISA_FINBERT_TIMEOUT_SECONDS", "8")))
 
 
 def load_finbert():
@@ -57,11 +63,13 @@ def score_headline(text: str) -> dict[str, float | str]:
     if not text.strip():
         return {"label": "neutral", "score": 0.0, "numeric": 0.0}
 
-    pipe = load_finbert()
-    if pipe is None:
+    if _FINBERT_FAILED:
         return _lexical_score(text)
     try:
-        result = pipe(text, batch_size=1, truncation=True)[0]
+        result = _score_with_timeout(text)
+    except TimeoutError:
+        _disable_finbert("FinBERT scoring timed out; falling back to lexical sentiment")
+        return _lexical_score(text)
     except Exception as exc:
         LOGGER.warning("FinBERT scoring failed; falling back to lexical sentiment: %s", exc)
         return _lexical_score(text)
@@ -77,6 +85,47 @@ def score_headline(text: str) -> dict[str, float | str]:
         numeric = 0.0
         clean_label = "neutral"
     return {"label": clean_label, "score": score, "numeric": numeric}
+
+
+def _score_with_timeout(text: str) -> dict[str, Any]:
+    start_method = "fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn"
+    ctx = multiprocessing.get_context(start_method)
+    results = ctx.Queue(maxsize=1)
+    process = ctx.Process(target=_finbert_process_score, args=(text, results), daemon=True)
+    process.start()
+    process.join(_finbert_timeout_seconds())
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=1)
+        raise TimeoutError("FinBERT scoring timed out")
+    if results.empty():
+        raise RuntimeError("FinBERT scoring process exited without a result")
+    result = results.get()
+    if "__error__" in result:
+        raise RuntimeError(str(result["__error__"]))
+    return result
+
+
+def _disable_finbert(message: str) -> None:
+    global _FINBERT_FAILED, _FINBERT_PIPELINE
+    LOGGER.warning(message)
+    _FINBERT_FAILED = True
+    _FINBERT_PIPELINE = None
+
+
+def _finbert_process_score(text: str, results: Any) -> None:
+    try:
+        from transformers import pipeline
+
+        pipe = pipeline(
+            "text-classification",
+            model="ProsusAI/finbert",
+            tokenizer="ProsusAI/finbert",
+            device=-1,
+        )
+        results.put(pipe(text, batch_size=1, truncation=True)[0])
+    except BaseException as exc:
+        results.put({"__error__": repr(exc)})
 
 
 def score_headlines(texts: list[str]) -> dict[str, float | int | str]:

@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import BrokerConfig, DEFAULT_SYMBOLS
 from .intelligence import FilterConfig
 from .live_engine import LivePaperConfig, LivePaperEngine
+from .live_trade import LiveTradeRiskConfig
 
 
 def create_app(config: LivePaperConfig | None = None) -> FastAPI:
@@ -20,8 +21,11 @@ def create_app(config: LivePaperConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        await engine.prepare()
-        task = asyncio.create_task(engine.run_forever())
+        async def _boot() -> None:
+            await engine.prepare()
+            await engine.run_forever()
+
+        task = asyncio.create_task(_boot())
         try:
             yield
         finally:
@@ -91,7 +95,6 @@ def build_live_config(
     trade_symbols: list[str] | None = None,
     period: str = "5d",
     interval: str = "5minute",
-    strategy: str = "ma-cross",
     poll_seconds: float = 15.0,
     use_intelligence_filter: bool = True,
     initial_cash: float = 100_000.0,
@@ -101,12 +104,14 @@ def build_live_config(
     min_volume: float = 100_000.0,
     max_spread_bps: float = 25.0,
     min_signal_score: float = 55.0,
+    atr_sl_mult: float = 1.5,
+    atr_target_mult: float = 2.5,
+    trail_atr_mult: float = 1.0,
 ) -> LivePaperConfig:
     return LivePaperConfig(
         trade_symbols=trade_symbols or DEFAULT_SYMBOLS,
         period=period,
         interval=interval,
-        strategy=strategy,
         poll_seconds=poll_seconds,
         use_intelligence_filter=use_intelligence_filter,
         broker=BrokerConfig(
@@ -119,5 +124,10 @@ def build_live_config(
             min_volume=min_volume,
             max_spread_bps=max_spread_bps,
             min_signal_score=min_signal_score,
+        ),
+        risk=LiveTradeRiskConfig(
+            atr_sl_mult=atr_sl_mult,
+            atr_target_mult=atr_target_mult,
+            trail_atr_mult=trail_atr_mult,
         ),
     )

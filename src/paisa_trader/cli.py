@@ -166,17 +166,19 @@ def cmd_live(args: argparse.Namespace) -> int:
         trade_symbols=args.trade_symbols,
         period=args.period,
         interval=args.interval,
-        strategy=args.strategy,
         poll_seconds=args.poll_seconds,
         use_intelligence_filter=not args.no_intelligence,
         initial_cash=args.initial_cash,
         spread_bps=args.spread_bps,
         slippage_bps=args.slippage_bps,
         max_position_pct=args.max_position_pct,
+        atr_sl_mult=args.atr_sl_mult,
+        atr_target_mult=args.atr_target_mult,
+        trail_atr_mult=args.trail_atr_mult,
     )
     app = create_app(config)
     print(f"Paisa live paper dashboard: http://{args.host}:{args.port}")
-    print("Live Upstox quotes + paper broker. No real orders are placed.")
+    print("Live Upstox LTP execution only. Cached candles used for models/indicators.")
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 
@@ -214,11 +216,14 @@ def cmd_ai_web(args: argparse.Namespace) -> int:
 
     ai_cfg = _ai_config_from_args(args)
     symbols = args.symbols or ai_cfg.symbols or DEFAULT_SYMBOLS[:3]
+    tick_seconds = args.tick_seconds
+    if tick_seconds == 1.0:
+        tick_seconds = ai_cfg.bar_interval_sec
     config = build_ai_web_config(
         symbols=symbols,
         period=args.period,
         interval=args.interval,
-        tick_seconds=args.tick_seconds,
+        tick_seconds=tick_seconds,
         loop=not args.no_loop,
         force_refresh=not args.no_refresh,
         initial_cash=args.initial_cash,
@@ -420,8 +425,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     live.add_argument("--period", default="5d")
     live.add_argument("--interval", default="5minute")
-    live.add_argument("--strategy", choices=["buy-hold", "ma-cross", "mean-reversion"], default="ma-cross")
     live.add_argument("--poll-seconds", type=float, default=15.0, help="Seconds between live quote refreshes.")
+    live.add_argument("--atr-sl-mult", type=float, default=1.5, help="ATR multiplier for initial stop loss.")
+    live.add_argument("--atr-target-mult", type=float, default=2.5, help="ATR multiplier for profit target.")
+    live.add_argument("--trail-atr-mult", type=float, default=1.0, help="ATR multiplier for trailing stop.")
     live.add_argument("--no-intelligence", action="store_true", help="Disable intelligence filter on entries.")
     live.add_argument("--initial-cash", type=float, default=100_000.0)
     live.add_argument("--spread-bps", type=float, default=3.0)

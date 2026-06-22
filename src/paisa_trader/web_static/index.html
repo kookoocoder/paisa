@@ -82,6 +82,29 @@
         </div>
       </section>
 
+      <section class="card wide live-only hidden" id="tradeCallsPanel">
+        <h3>Live Trade Calls</h3>
+        <p class="note">Executions use live Upstox LTP only. Cached candles feed models/indicators. Each call shows entry, SL, target, and exit.</p>
+        <div class="trade-calls-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Stock</th>
+                <th>Segment</th>
+                <th>Call</th>
+                <th>Entry</th>
+                <th>SL</th>
+                <th>Target</th>
+                <th>Exit</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="tradeCallsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="grid">
         <article class="card wide">
           <div class="card-head">
@@ -104,7 +127,7 @@
         <article class="card">
           <h3>Paper Positions</h3>
           <table>
-            <thead><tr><th>Symbol</th><th>Qty</th><th>Target</th><th>Close</th></tr></thead>
+            <thead><tr><th>Symbol</th><th>Qty</th><th>Live LTP</th><th>SL</th><th>Target</th></tr></thead>
             <tbody id="positionsBody"></tbody>
           </table>
         </article>

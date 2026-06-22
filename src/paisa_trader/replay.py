@@ -161,7 +161,7 @@ class ReplayEngine:
         if self.config.use_intelligence_filter and target > previous:
             visible = frame.iloc[: idx + 1]
             enriched = enrich_indicators(visible)
-            signal = score_next_move(enriched, self.config.filters)
+            signal = score_next_move(enriched, self.config.filters, symbol=symbol)
             if not signal["paper_trade_candidate"]:
                 if target > 0:
                     self._event(
@@ -229,7 +229,7 @@ class ReplayEngine:
         enriched = enrich_indicators(visible)
         last = enriched.iloc[-1]
         target = max(0.0, min(1.0, float(last.get("target_position", 0.0))))
-        next_move = score_next_move(enriched, self.config.filters)
+        next_move = score_next_move(enriched, self.config.filters, symbol=symbol)
         equity = self.broker.mark_to_market(self._latest_prices)
         snapshot = ai_market_snapshot(
             symbol,

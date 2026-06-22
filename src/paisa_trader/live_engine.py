@@ -5,6 +5,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, time, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -18,12 +19,17 @@ from .data import (
     nse_equity_universe,
     quote_snapshot,
 )
-from .intelligence import FilterConfig, ai_market_snapshot, enrich_indicators, score_next_move
-from .strategies import Strategy, build_strategy
+from .intelligence import FilterConfig, ai_market_snapshot, default_headlines, enrich_indicators
+from .live_trade import (
+    LiveTradeCall,
+    LiveTradeRiskConfig,
+    build_entry_call,
+    build_exit_call,
+    evaluate_exit,
+    signal_call_preview,
+    update_trailing_stop,
+)
 from .trade_stats import trade_pnl_stats
-
-
-from zoneinfo import ZoneInfo
 
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -34,11 +40,11 @@ class LivePaperConfig:
     trade_symbols: list[str]
     period: str = "5d"
     interval: str = "5minute"
-    strategy: str = "ma-cross"
     poll_seconds: float = 15.0
     use_intelligence_filter: bool = True
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     filters: FilterConfig = field(default_factory=FilterConfig)
+    risk: LiveTradeRiskConfig = field(default_factory=LiveTradeRiskConfig)
 
 
 class LivePaperEngine:
@@ -46,14 +52,14 @@ class LivePaperEngine:
         if not config.trade_symbols:
             raise ValueError("At least one trade symbol is required.")
         self.config = config
-        self.strategy: Strategy = build_strategy(config.strategy)
         self.broker = SimulatedBroker(config.broker)
         self._universe: list[dict[str, str]] = []
-        self._key_to_symbol: dict[str, str] = {}
+        self._symbol_meta: dict[str, dict[str, str]] = {}
         self._market_rows: list[dict[str, Any]] = []
-        self._candles: dict[str, pd.DataFrame] = {}
-        self._signaled: dict[str, pd.DataFrame] = {}
-        self._previous_targets: dict[str, float] = {}
+        self._live_quotes: dict[str, dict[str, Any]] = {}
+        self._feature_candles: dict[str, pd.DataFrame] = {}
+        self._open_calls: dict[str, LiveTradeCall] = {}
+        self._trade_calls: list[dict[str, Any]] = []
         self._latest_prices: dict[str, float] = {}
         self._events: list[dict[str, Any]] = []
         self._equity_points: list[dict[str, Any]] = []
@@ -62,19 +68,30 @@ class LivePaperEngine:
         self._last_quote_refresh: datetime | None = None
         self._quote_error: str | None = None
         self._active_trade_symbols: list[str] = list(config.trade_symbols)
+        self._latest_ai_snapshots: dict[str, dict[str, Any]] = {}
+        self._latest_next_moves: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
+        self._poll_count = 0
         self._subscribers: set[asyncio.Queue[str]] = set()
 
     async def prepare(self) -> None:
         universe = await asyncio.to_thread(nse_equity_universe)
         self._universe = universe
-        self._key_to_symbol = {row["instrument_key"]: row["symbol"] for row in universe}
+        self._symbol_meta = {
+            row["symbol"]: {
+                "symbol": row["symbol"],
+                "segment": "NSE_EQ",
+                "stock_name": row.get("name", row["symbol"]),
+                "instrument_key": row["instrument_key"],
+            }
+            for row in universe
+        }
 
         missing_symbols: list[str] = []
-        candles_by_symbol: dict[str, pd.DataFrame] = {}
+        feature_candles: dict[str, pd.DataFrame] = {}
         for symbol in self.config.trade_symbols:
             try:
-                candles_by_symbol[symbol] = await asyncio.to_thread(
+                feature_candles[symbol] = await asyncio.to_thread(
                     load_candles_cached,
                     symbol,
                     self.config.period,
@@ -91,7 +108,7 @@ class LivePaperEngine:
                     False,
                 )
                 for symbol in missing_symbols:
-                    candles_by_symbol[symbol] = await asyncio.to_thread(
+                    feature_candles[symbol] = await asyncio.to_thread(
                         load_candles_cached,
                         symbol,
                         self.config.period,
@@ -100,41 +117,41 @@ class LivePaperEngine:
             except Exception as exc:
                 self._quote_error = str(exc)
 
-        if not candles_by_symbol:
+        if not feature_candles:
             raise RuntimeError(
-                "No cached candles available for the trade watchlist. "
-                "Set UPSTOX_ANALYTICS_TOKEN and run `paisa download`, "
-                "or pass --trade-symbols for symbols with cached data."
+                "No feature candles available for the trade watchlist. "
+                "Set UPSTOX_ANALYTICS_TOKEN and run `paisa download`."
             )
 
-        self._active_trade_symbols = list(candles_by_symbol.keys())
+        self._active_trade_symbols = list(feature_candles.keys())
 
         async with self._lock:
             self.broker = SimulatedBroker(self.config.broker)
-            self._candles = {}
-            self._signaled = {}
-            self._previous_targets = {}
+            self._feature_candles = {
+                symbol: candles.sort_values("timestamp").reset_index(drop=True)
+                for symbol, candles in feature_candles.items()
+            }
+            self._open_calls = {}
+            self._trade_calls = []
             self._latest_prices = {}
+            self._latest_ai_snapshots = {}
+            self._latest_next_moves = {}
             self._events = []
             self._equity_points = []
-            for symbol, candles in candles_by_symbol.items():
-                normalized = candles.sort_values("timestamp").reset_index(drop=True)
-                if normalized.empty:
-                    raise ValueError(f"No candles available for {symbol}")
-                self._candles[symbol] = normalized
-                self._signaled[symbol] = self.strategy.signals(normalized)
-                self._previous_targets[symbol] = 0.0
-                self._latest_prices[symbol] = float(normalized["close"].iloc[-1])
 
         try:
-            await self._refresh_quotes()
+            await self._refresh_quotes(watchlist_only=True)
         except Exception as exc:
             self._quote_error = str(exc)
-            self._event("system", "Live quotes unavailable; using cached candles", {"error": str(exc)})
-        self._event("system", "Live paper engine prepared", {"trade_symbols": self._active_trade_symbols})
+            self._event("system", "Live quotes unavailable; trading paused until quotes return", {"error": str(exc)})
+        self._event(
+            "system",
+            "Live paper engine prepared (feature cache for models, live LTP for execution)",
+            {"trade_symbols": self._active_trade_symbols},
+        )
 
     async def run_forever(self) -> None:
-        if not self._candles:
+        if not self._feature_candles:
             await self.prepare()
         self._running = True
         self._started_at = datetime.now(timezone.utc)
@@ -146,13 +163,44 @@ class LivePaperEngine:
             await asyncio.sleep(max(1.0, self.config.poll_seconds))
 
     async def step(self) -> None:
+        self._poll_count += 1
         try:
-            await self._refresh_quotes()
+            await self._refresh_quotes(watchlist_only=self._poll_count % 4 != 0)
         except Exception as exc:
             self._quote_error = str(exc)
+        snapshot_jobs: list[dict[str, Any]] = []
         async with self._lock:
+            equity = self.broker.mark_to_market(self._latest_prices)
             for symbol in self._active_trade_symbols:
-                self._step_symbol(symbol)
+                feature_frame = self._feature_candles.get(symbol)
+                if feature_frame is None or feature_frame.empty:
+                    continue
+                snapshot_jobs.append(
+                    {
+                        "symbol": symbol,
+                        "feature_frame": feature_frame,
+                        "open_call": self._open_calls.get(symbol),
+                        "equity": equity,
+                        "cash": self.broker.cash,
+                        "positions": dict(self.broker.positions),
+                        "fills": list(self.broker.fills[-10:]),
+                        "total_trades": len(self.broker.fills),
+                    }
+                )
+        refreshed: dict[str, dict[str, Any]] = {}
+        for job in snapshot_jobs:
+            refreshed[job["symbol"]] = await asyncio.to_thread(self._build_ai_snapshot_job, job)
+        async with self._lock:
+            self._latest_ai_snapshots.update(refreshed)
+            self._latest_next_moves.update(
+                {
+                    symbol: snapshot["next_move"]
+                    for symbol, snapshot in refreshed.items()
+                    if "next_move" in snapshot
+                }
+            )
+            for symbol in self._active_trade_symbols:
+                self._step_symbol(symbol, self._latest_next_moves.get(symbol))
             self._record_equity()
             state = self._state_unlocked()
         await self._publish_state(state)
@@ -192,91 +240,191 @@ class LivePaperEngine:
         async with self._lock:
             return self._state_unlocked()
 
-    async def _refresh_quotes(self) -> None:
-        keys = [row["instrument_key"] for row in self._universe]
-        if not keys:
-            self._universe = await asyncio.to_thread(nse_equity_universe)
+    async def _refresh_quotes(self, watchlist_only: bool = False) -> None:
+        if watchlist_only:
+            keys: list[str] = []
+            for symbol in self._active_trade_symbols:
+                meta = self._symbol_metadata(symbol)
+                key = meta.get("instrument_key", "")
+                if key:
+                    keys.append(key)
+            if not keys:
+                watchlist_only = False
+
+        if not watchlist_only:
             keys = [row["instrument_key"] for row in self._universe]
-            self._key_to_symbol = {row["instrument_key"]: row["symbol"] for row in self._universe}
+            if not keys:
+                self._universe = await asyncio.to_thread(nse_equity_universe)
+                self._symbol_meta = {
+                    row["symbol"]: {
+                        "symbol": row["symbol"],
+                        "segment": "NSE_EQ",
+                        "stock_name": row.get("name", row["symbol"]),
+                        "instrument_key": row["instrument_key"],
+                    }
+                    for row in self._universe
+                }
+                keys = [row["instrument_key"] for row in self._universe]
 
         raw_quotes = await asyncio.to_thread(fetch_upstox_quotes_by_keys, keys, full=True)
         rows: list[dict[str, Any]] = []
-        quote_by_symbol: dict[str, dict[str, Any]] = {}
+        live_quotes: dict[str, dict[str, Any]] = {}
         for instrument_key, raw in raw_quotes.items():
-            trading_symbol = self._key_to_symbol.get(instrument_key, instrument_key)
+            trading_symbol = next(
+                (row["symbol"] for row in self._universe if row["instrument_key"] == instrument_key),
+                instrument_key,
+            )
             row = quote_snapshot(instrument_key, raw, trading_symbol)
             rows.append(row)
-            quote_by_symbol[trading_symbol] = row
+            live_quotes[trading_symbol] = row
 
         async with self._lock:
-            self._market_rows = sorted(rows, key=lambda item: item["symbol"])
+            if not watchlist_only:
+                self._market_rows = sorted(rows, key=lambda item: item["symbol"])
+            else:
+                merged = {row["symbol"]: row for row in self._market_rows}
+                for row in rows:
+                    merged[row["symbol"]] = row
+                self._market_rows = sorted(merged.values(), key=lambda item: item["symbol"])
+            self._live_quotes.update(live_quotes)
             self._last_quote_refresh = datetime.now(timezone.utc)
             for symbol in self._active_trade_symbols:
-                quote = quote_by_symbol.get(symbol)
+                quote = self._live_quote(symbol)
                 if quote:
-                    self._apply_live_quote(symbol, quote)
+                    self._latest_prices[symbol] = float(quote["ltp"])
 
-    def _apply_live_quote(self, symbol: str, quote: dict[str, Any]) -> None:
-        candles = self._candles.get(symbol)
-        if candles is None or candles.empty:
-            return
-        updated = candles.copy()
-        idx = len(updated) - 1
-        ltp = float(quote["ltp"])
-        updated.loc[idx, "close"] = ltp
-        updated.loc[idx, "high"] = max(float(updated.loc[idx, "high"]), float(quote.get("high", ltp)), ltp)
-        updated.loc[idx, "low"] = min(float(updated.loc[idx, "low"]), float(quote.get("low", ltp)), ltp)
-        if quote.get("volume"):
-            updated.loc[idx, "volume"] = int(quote["volume"])
-        self._candles[symbol] = updated
-        self._signaled[symbol] = self.strategy.signals(updated)
-        self._latest_prices[symbol] = ltp
+    def _canonical_symbol(self, symbol: str) -> str:
+        return symbol.upper().removesuffix(".NS").removesuffix(".BO")
 
-    def _step_symbol(self, symbol: str) -> None:
-        frame = self._signaled[symbol]
-        if frame.empty:
+    def _live_quote(self, symbol: str) -> dict[str, Any] | None:
+        base = self._canonical_symbol(symbol)
+        for key in (base, symbol.upper(), f"{base}.NS"):
+            quote = self._live_quotes.get(key)
+            if quote and float(quote.get("ltp", 0) or 0) > 0:
+                return quote
+        return None
+
+    def _symbol_metadata(self, symbol: str) -> dict[str, str]:
+        base = self._canonical_symbol(symbol)
+        return self._symbol_meta.get(
+            base,
+            {"symbol": base, "segment": "NSE_EQ", "stock_name": base, "instrument_key": ""},
+        )
+
+    def _feature_atr(self, symbol: str) -> float:
+        frame = self._feature_candles.get(symbol)
+        if frame is None or frame.empty:
+            return 0.0
+        enriched = enrich_indicators(frame)
+        value = enriched.iloc[-1].get("atr_14")
+        if value is not None and not pd.isna(value):
+            return float(value)
+        return float(enriched.iloc[-1]["close"]) * 0.01
+
+    def _append_trade_call(self, call: LiveTradeCall) -> None:
+        payload = call.to_dict()
+        self._trade_calls.append(payload)
+        self._trade_calls = self._trade_calls[-200:]
+
+    def _step_symbol(self, symbol: str, signal: dict[str, Any] | None = None) -> None:
+        quote = self._live_quote(symbol)
+        if quote is None:
             return
-        row = frame.iloc[-1]
+
+        live_ltp = float(quote["ltp"])
+        if live_ltp <= 0:
+            return
+
+        self._latest_prices[symbol] = live_ltp
+        feature_frame = self._feature_candles.get(symbol)
+        if feature_frame is None or feature_frame.empty:
+            return
+
+        enriched = enrich_indicators(feature_frame)
+        signal = signal or self._neutral_next_move(enriched)
+        atr_value = self._feature_atr(symbol)
+        meta = self._symbol_metadata(symbol)
         timestamp = pd.Timestamp(datetime.now(timezone.utc))
-        price = float(row["open"] if pd.notna(row["open"]) else row["close"])
-        close = float(row["close"])
-        self._latest_prices[symbol] = close
-        target = max(0.0, min(1.0, float(row.get("target_position", 0.0))))
-        previous = self._previous_targets[symbol]
 
-        if self.config.use_intelligence_filter and target > previous:
-            enriched = enrich_indicators(frame)
-            signal = score_next_move(enriched, self.config.filters)
-            if not signal["paper_trade_candidate"]:
-                target = previous
-
-        if target != previous:
-            equity = self.broker.mark_to_market(self._latest_prices)
-            desired = int((equity * self.config.broker.max_position_pct * target) // max(price, 0.01))
-            current = self.broker.position(symbol)
-            fill = None
-            if target > previous:
-                fill = self.broker.submit_market_order(
-                    timestamp,
-                    symbol,
-                    "BUY",
-                    max(0, desired - current),
-                    price,
-                    f"{self.strategy.name} live entry",
-                )
-            else:
-                quantity = current if target == 0 else max(0, current - desired)
+        open_call = self._open_calls.get(symbol)
+        if open_call is not None:
+            open_call = update_trailing_stop(open_call, live_ltp, atr_value, self.config.risk)
+            exit_status, exit_reason = evaluate_exit(open_call, live_ltp)
+            if exit_status:
+                exit_call = build_exit_call(open_call, live_ltp, exit_status, exit_reason)
                 fill = self.broker.submit_market_order(
                     timestamp,
                     symbol,
                     "SELL",
-                    quantity,
-                    price,
-                    f"{self.strategy.name} live exit",
+                    self.broker.position(symbol),
+                    live_ltp,
+                    f"live {exit_status.lower()}",
                 )
-            if fill is not None:
-                self._event("fill", f"{fill.side} {fill.quantity} {symbol} @ {fill.price:.2f}", asdict(fill))
-        self._previous_targets[symbol] = target
+                if fill is not None:
+                    self._append_trade_call(exit_call)
+                    self._open_calls.pop(symbol, None)
+                    self._event("trade_call", self._format_trade_call_message(exit_call), exit_call.to_dict())
+                    self._event("fill", f"{fill.side} {fill.quantity} {symbol} @ {fill.price:.2f}", asdict(fill))
+                return
+            self._open_calls[symbol] = open_call
+            return
+
+        if self.broker.position(symbol) > 0:
+            return
+
+        if not signal.get("paper_trade_candidate"):
+            return
+        if self.config.use_intelligence_filter and not signal.get("paper_trade_candidate"):
+            return
+
+        preview = signal_call_preview(
+            meta["symbol"],
+            meta["segment"],
+            meta["stock_name"],
+            live_ltp,
+            atr_value,
+            list(signal.get("reasons", [])),
+            self.config.risk,
+        )
+        self._event("trade_call", self._format_trade_call_message(preview), preview.to_dict())
+
+        equity = self.broker.mark_to_market(self._latest_prices)
+        quantity = int((equity * self.config.broker.max_position_pct) // max(live_ltp, 0.01))
+        if quantity <= 0:
+            return
+
+        entry_call = build_entry_call(
+            meta["symbol"],
+            meta["segment"],
+            meta["stock_name"],
+            live_ltp,
+            atr_value,
+            quantity,
+            list(signal.get("reasons", [])),
+            self.config.risk,
+        )
+        fill = self.broker.submit_market_order(
+            timestamp,
+            symbol,
+            "BUY",
+            quantity,
+            live_ltp,
+            "live ensemble entry",
+        )
+        if fill is None:
+            return
+        self._open_calls[symbol] = entry_call
+        self._append_trade_call(entry_call)
+        self._event("trade_call", self._format_trade_call_message(entry_call), entry_call.to_dict())
+        self._event("fill", f"{fill.side} {fill.quantity} {symbol} @ {fill.price:.2f}", asdict(fill))
+
+    def _format_trade_call_message(self, call: LiveTradeCall) -> str:
+        exit_text = f"{call.exit_inr:.2f}" if call.exit_inr is not None else "—"
+        return (
+            f"{call.stock_name} ({call.symbol}) [{call.segment}] "
+            f"{call.call} @ {call.entry_inr:.2f} | SL {call.stop_loss_inr:.2f} | "
+            f"Target {call.target_inr:.2f} | Exit {exit_text} | {call.status}"
+        )
 
     def _record_equity(self) -> None:
         equity = self.broker.mark_to_market(self._latest_prices)
@@ -300,42 +448,88 @@ class LivePaperEngine:
         )
         self._events = self._events[-200:]
 
-    def _symbol_state(self, symbol: str) -> dict[str, Any]:
-        frame = self._signaled[symbol]
-        enriched = enrich_indicators(frame)
-        last = enriched.iloc[-1]
-        target = max(0.0, min(1.0, float(last.get("target_position", 0.0))))
-        next_move = score_next_move(enriched, self.config.filters)
-        equity = self.broker.mark_to_market(self._latest_prices)
-        snapshot = ai_market_snapshot(
+    @staticmethod
+    def _neutral_next_move(enriched: pd.DataFrame | None = None) -> dict[str, Any]:
+        regime = "UNKNOWN"
+        if enriched is not None and not enriched.empty:
+            last_regime = enriched.iloc[-1].get("regime")
+            if last_regime:
+                regime = str(last_regime)
+        return {
+            "direction": "neutral",
+            "action": "no_trade",
+            "score": 50.0,
+            "confidence": 0.0,
+            "reasons": ["Model snapshot warming up."],
+            "disqualifiers": [],
+            "factor_scores": {},
+            "regime": regime,
+            "active_regime": regime,
+            "active_weights": {},
+            "passes_filters": False,
+            "paper_trade_candidate": False,
+            "model_signals": {},
+        }
+
+    @staticmethod
+    def _warming_snapshot(symbol: str) -> dict[str, Any]:
+        return {
+            "symbol": symbol,
+            "warming_up": True,
+            "ml_direction": "NEUTRAL",
+            "ml_confidence": 0.0,
+            "sentiment_label": "neutral",
+            "sentiment_composite": 0.0,
+            "arima_direction": "NEUTRAL",
+            "indicators": {},
+            "depth_levels": [],
+        }
+
+    def _build_ai_snapshot_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        symbol = str(job["symbol"])
+        enriched = enrich_indicators(job["feature_frame"])
+        open_call = job.get("open_call")
+        positions = job.get("positions", {})
+        fills = job.get("fills", [])
+        return ai_market_snapshot(
             symbol,
             enriched,
-            target,
+            1.0 if open_call else 0.0,
             self.config.filters,
-            active_strategy=self.strategy.name,
-            equity=equity,
-            cash=self.broker.cash,
+            active_strategy="live-ensemble",
+            equity=float(job.get("equity", 0.0)),
+            cash=float(job.get("cash", 0.0)),
             open_positions=[
                 {"symbol": position_symbol, "quantity": quantity}
-                for position_symbol, quantity in self.broker.positions.items()
+                for position_symbol, quantity in positions.items()
                 if quantity
             ],
-            recent_fills=[_jsonable(asdict(fill)) for fill in self.broker.fills[-10:]],
-            total_trades=len(self.broker.fills),
+            recent_fills=[_jsonable(asdict(fill)) for fill in fills],
+            total_trades=int(job.get("total_trades", 0)),
+            headlines=default_headlines(symbol),
         )
+
+    def _symbol_state(self, symbol: str) -> dict[str, Any]:
+        feature_frame = self._feature_candles[symbol]
+        enriched = enrich_indicators(feature_frame)
+        quote = self._live_quote(symbol) or {}
+        live_ltp = float(quote.get("ltp", self._latest_prices.get(symbol, 0.0)) or 0.0)
+        next_move = self._latest_next_moves.get(symbol) or self._neutral_next_move(enriched)
+        open_call = self._open_calls.get(symbol)
+        snapshot = self._latest_ai_snapshots.get(symbol) or self._warming_snapshot(symbol)
         recent_candles = enriched.tail(120)
         return {
             "symbol": symbol,
-            "cursor": len(frame) - 1,
-            "total_bars": len(frame),
-            "last_bar_time": pd.Timestamp(last["timestamp"]).isoformat(),
-            "close": round(float(last["close"]), 4),
-            "volume": round(float(last["volume"]), 2),
+            "live_ltp": round(live_ltp, 4),
+            "feature_bars": len(feature_frame),
+            "last_feature_bar_time": pd.Timestamp(feature_frame.iloc[-1]["timestamp"]).isoformat(),
+            "quote_timestamp": quote.get("timestamp", ""),
+            "execution_source": "live",
             "position": self.broker.position(symbol),
-            "target_position": target,
+            "open_trade_call": open_call.to_dict() if open_call else None,
             "next_move": next_move,
-            "indicators": snapshot["indicators"],
-            "depth": snapshot["depth_levels"],
+            "indicators": snapshot.get("indicators", {}),
+            "depth": snapshot.get("depth_levels", []),
             "candles": [
                 {
                     "time": pd.Timestamp(row["timestamp"]).isoformat(),
@@ -372,20 +566,25 @@ class LivePaperEngine:
             "market_status": self._market_status(),
             "last_quote_refresh": self._last_quote_refresh.isoformat() if self._last_quote_refresh else None,
             "quote_error": self._quote_error,
+            "execution_policy": "live_ltp_only",
+            "feature_data_policy": "cached_candles_for_models_only",
             "config": {
                 "mode": "live",
                 "trade_symbols": self._active_trade_symbols,
                 "period": self.config.period,
                 "interval": self.config.interval,
-                "strategy": self.config.strategy,
+                "strategy": "live-ensemble",
                 "poll_seconds": self.config.poll_seconds,
                 "use_intelligence_filter": self.config.use_intelligence_filter,
                 "symbols": self._active_trade_symbols,
                 "tick_seconds": self.config.poll_seconds,
                 "loop": False,
+                "risk": asdict(self.config.risk),
             },
             "market_universe": self._market_rows,
             "universe_count": len(self._market_rows),
+            "trade_calls": list(self._trade_calls[-50:]),
+            "open_trade_calls": {symbol: call.to_dict() for symbol, call in self._open_calls.items()},
             "portfolio": {
                 "cash": round(self.broker.cash, 2),
                 "equity": round(equity, 2),
@@ -401,8 +600,16 @@ class LivePaperEngine:
                 latest_prices=self._latest_prices,
                 positions={symbol: qty for symbol, qty in self.broker.positions.items() if qty},
             ),
-            "symbols": {symbol: self._symbol_state(symbol) for symbol in self._active_trade_symbols},
-            "events": [event for event in self._events[-100:] if event.get("kind") != "filter"],
+            "symbols": (
+                symbol_states := {
+                    symbol: self._symbol_state(symbol) for symbol in self._active_trade_symbols
+                }
+            ),
+            "events": [
+                event
+                for event in self._events[-100:]
+                if event.get("kind") in {"fill", "system", "trade_call"}
+            ],
             "ai_snapshot": {
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "purpose": "AI model market-view input for live paper trading",
@@ -411,10 +618,7 @@ class LivePaperEngine:
                     "equity": round(equity, 2),
                     "return_pct": round(((equity / initial) - 1) * 100, 4) if initial else 0.0,
                 },
-                "symbols": {
-                    symbol: self._symbol_state(symbol)["ai_snapshot"]
-                    for symbol in self._active_trade_symbols
-                },
+                "symbols": {symbol: state["ai_snapshot"] for symbol, state in symbol_states.items()},
             },
         }
 

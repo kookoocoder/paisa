@@ -50,6 +50,7 @@ function render() {
     document.getElementById("marketStatus").textContent = state.market_status || "unknown";
     document.getElementById("universeCount").textContent = String(state.universe_count || 0);
     renderMarketScreener();
+    renderTradeCalls();
   } else {
     document.getElementById("clock").textContent = `Replay update ${new Date(state.generated_at).toLocaleString()} · ${state.config.interval} bars from ${state.config.period}`;
     const sym = state.symbols[selectedSymbol];
@@ -86,7 +87,9 @@ function renderConfig() {
     ? {
         Mode: "live",
         "Trade watchlist": (state.config.trade_symbols || state.config.symbols || []).join(", "),
-        Strategy: state.config.strategy,
+        Strategy: state.config.strategy || "live-ensemble",
+        Execution: state.execution_policy || "live_ltp_only",
+        "Feature data": state.feature_data_policy || "cached for models",
         Period: state.config.period,
         Interval: state.config.interval,
         Poll: `${state.config.poll_seconds}s`,
@@ -167,6 +170,7 @@ function renderEquityChart() {
 }
 
 function renderChart(symbolState) {
+  if (!symbolState) return;
   const canvas = document.getElementById("priceChart");
   const ctx = canvas.getContext("2d");
   const w = canvas.width;
@@ -193,7 +197,7 @@ function renderChart(symbolState) {
   drawLine(ctx, candles.map((c, i) => c.sma_30 == null ? null : [x(i), y(c.sma_30)]), "#8a5b00", 1.5);
   ctx.fillStyle = "#657080";
   ctx.font = "12px system-ui";
-  ctx.fillText(`${selectedSymbol} close / SMA10 / SMA30`, 42, 18);
+  ctx.fillText(`${selectedSymbol} close / SMA10 / SMA30${symbolState.live_ltp ? ` · live ${fmt.format(symbolState.live_ltp)}` : ""}`, 42, 18);
   ctx.fillText(max.toFixed(2), 4, 24);
   ctx.fillText(min.toFixed(2), 4, h - 24);
 }
@@ -223,11 +227,46 @@ function renderSignal(symbolState) {
   `;
 }
 
+function renderTradeCalls() {
+  const body = document.getElementById("tradeCallsBody");
+  if (!body) return;
+  const calls = (state.trade_calls || []).slice().reverse();
+  if (!calls.length) {
+    body.innerHTML = `<tr><td colspan="9" class="ledger-empty">No live trade calls yet.</td></tr>`;
+    return;
+  }
+  body.innerHTML = calls.map((call) => {
+    const time = call.closed_at || call.opened_at || state.generated_at;
+    const tone = call.call === "BUY" ? "buy" : call.status === "TARGET_HIT" ? "ok" : "warn";
+    return `
+      <tr>
+        <td>${time ? new Date(time).toLocaleString() : "--"}</td>
+        <td><strong>${escapeHtml(call.stock_name || call.symbol)}</strong><br><small>${escapeHtml(call.symbol)}</small></td>
+        <td>${escapeHtml(call.segment || "NSE_EQ")}</td>
+        <td><span class="pill ${tone}">${escapeHtml(call.call)}</span></td>
+        <td>${fmt.format(call.entry_inr)}</td>
+        <td>${fmt.format(call.stop_loss_inr || call.trailing_sl_inr)}</td>
+        <td>${fmt.format(call.target_inr)}</td>
+        <td>${call.exit_inr == null ? "—" : fmt.format(call.exit_inr)}</td>
+        <td>${escapeHtml(call.status)}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
 function renderPositions(symbols) {
   const body = document.getElementById("positionsBody");
   body.innerHTML = symbols.map(s => {
     const row = state.symbols[s];
-    return `<tr><td>${s}</td><td>${row.position}</td><td>${(row.target_position * 100).toFixed(0)}%</td><td>${fmt.format(row.close)}</td></tr>`;
+    const openCall = row.open_trade_call || (state.open_trade_calls || {})[s];
+    const ltp = row.live_ltp ?? row.close;
+    return `<tr>
+      <td>${s}</td>
+      <td>${row.position}</td>
+      <td>${fmt.format(ltp)}</td>
+      <td>${openCall ? fmt.format(openCall.trailing_sl_inr || openCall.stop_loss_inr) : "--"}</td>
+      <td>${openCall ? fmt.format(openCall.target_inr) : "--"}</td>
+    </tr>`;
   }).join("");
 }
 

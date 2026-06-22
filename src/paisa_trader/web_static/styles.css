@@ -203,6 +203,14 @@ th { color: var(--muted); font-weight: 700; }
 .negative { color: var(--red); font-weight: 700; }
 .neutral { color: var(--muted); }
 
+.trade-calls-wrap {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.trade-calls-wrap td small { color: var(--muted); }
+
 @media (max-width: 980px) {
   body { grid-template-columns: 1fr; }
   .sidebar { position: static; }
