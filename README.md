@@ -1,10 +1,9 @@
 # Paisa Trader
 
-No-demat, no-broker-key research harness for Indian market experiments.
+No-demat research harness for Indian market experiments.
 
 It uses:
 
-- `yfinance` for free/delayed NSE/BSE/index candles.
 - Upstox read-only tokens for broker-backed historical candles and current market quote snapshots.
 - NSE public reports/bhavcopy URLs where available.
 - A simulated broker for paper fills with configurable costs, slippage, latency, and spread.
@@ -21,23 +20,24 @@ python3 -m venv .venv
 python -m pip install -e ".[dev]"
 
 paisa symbols
-paisa download --symbols RELIANCE.NS TCS.NS INFY.NS --period 60d --interval 1d
-paisa download --source upstox --symbols RELIANCE.NS TCS.NS INFY.NS --period 5d --interval 5m
-paisa upstox-quote --symbols RELIANCE.NS TCS.NS INFY.NS
-paisa backtest --symbols RELIANCE.NS TCS.NS INFY.NS --period 60d --interval 1d --strategy ma-cross
-paisa stocksharp-export --symbols RELIANCE.NS TCS.NS INFY.NS --period 60d --interval 1d --strategy ma-cross
+paisa download --symbols RELIANCE TCS INFY --period 60d --interval 1day
+paisa download --symbols RELIANCE TCS INFY --period 5d --interval 5minute
+paisa upstox-quote --symbols RELIANCE TCS INFY
+paisa train-ml --symbols RELIANCE TCS INFY --period 60d --interval 5minute
+paisa backtest --symbols RELIANCE TCS INFY --period 60d --interval 1day --strategy ma-cross
+paisa stocksharp-export --symbols RELIANCE TCS INFY --period 60d --interval 1day --strategy ma-cross
 paisa dashboard
 pytest
 ```
 
-Launch the live-delayed dashboard:
+Launch the paper dashboard:
 
 ```bash
 pip install -e ".[dashboard]"
 paisa dashboard
 ```
 
-Open `http://localhost:8501`, pick symbols/strategy, and click **Refresh delayed data** to pull fresh `yfinance` candles and replay the shadow paper strategy.
+Open `http://localhost:8501`, pick symbols/strategy, and click **Refresh Upstox data** to pull fresh candles and replay the shadow paper strategy.
 
 The dashboard gives your AI model/human operator:
 
@@ -56,7 +56,7 @@ Depth is synthetic because there is no broker/exchange feed in the no-demat setu
 Run a one-shot shadow session from the terminal (useful for cron / end-of-day reports):
 
 ```bash
-paisa shadow --symbols RELIANCE.NS TCS.NS INFY.NS --period 3mo --interval 1d --strategy ma-cross --export-bridge
+paisa shadow --symbols RELIANCE TCS INFY --period 3mo --interval 1day --strategy ma-cross --export-bridge
 ```
 
 ### Autonomous Intraday Web Dashboard
@@ -69,7 +69,7 @@ paisa web
 
 Open `http://localhost:8080`. The engine:
 
-- downloads delayed `yfinance` intraday candles on startup,
+- downloads Upstox intraday candles on startup,
 - streams bars in real time (1 bar/second by default),
 - runs the selected strategy with an intelligence filter on entries,
 - loops the session automatically when the window ends,
@@ -78,7 +78,7 @@ Open `http://localhost:8080`. The engine:
 Useful flags:
 
 ```bash
-paisa web --symbols RELIANCE.NS TCS.NS INFY.NS --interval 5m --period 5d --strategy ma-cross --tick-seconds 0.5
+paisa web --symbols RELIANCE TCS INFY --interval 5minute --period 5d --strategy ma-cross --tick-seconds 0.5
 ```
 
 Generated data and reports are written under:
@@ -99,19 +99,19 @@ paisa symbols
 Download candles:
 
 ```bash
-paisa download --symbols RELIANCE.NS TCS.NS INFY.NS --period 6mo --interval 1d
+paisa download --symbols RELIANCE TCS INFY --period 6mo --interval 1day
 ```
 
 Run a backtest:
 
 ```bash
-paisa backtest --symbols RELIANCE.NS TCS.NS INFY.NS --period 6mo --interval 1d --strategy ma-cross
+paisa backtest --symbols RELIANCE TCS INFY --period 6mo --interval 1day --strategy ma-cross
 ```
 
 Export a StockSharp bridge package:
 
 ```bash
-paisa stocksharp-export --symbols RELIANCE.NS TCS.NS INFY.NS --period 6mo --interval 1d --strategy ma-cross
+paisa stocksharp-export --symbols RELIANCE TCS INFY --period 6mo --interval 1day --strategy ma-cross
 ```
 
 That writes:
@@ -142,12 +142,12 @@ Create an Upstox Developer app, then generate an Analytics Token from the app da
 ```bash
 export UPSTOX_ANALYTICS_TOKEN="your-upstox-analytics-token"
 
-paisa download --source upstox --symbols RELIANCE.NS TCS.NS INFY.NS --period 5d --interval 5m --force
-paisa upstox-quote --symbols RELIANCE.NS TCS.NS INFY.NS
-paisa upstox-quote --ltp --symbols RELIANCE.NS
+paisa download --symbols RELIANCE TCS INFY --period 5d --interval 5minute --force
+paisa upstox-quote --symbols RELIANCE TCS INFY
+paisa upstox-quote --ltp --symbols RELIANCE
 ```
 
-The Upstox source accepts familiar NSE/BSE symbols such as `RELIANCE.NS` and `SBIN.BO`, then resolves them through the Upstox BOD instrument master. Raw Upstox instrument keys like `NSE_EQ|INE002A01018` are also accepted.
+The Upstox source accepts plain NSE symbols such as `RELIANCE`, `TCS`, and `INFY`, then resolves them through a common mapping or the Upstox BOD instrument master. Raw Upstox instrument keys like `NSE_EQ|INE002A01018` are also accepted.
 
 ## Strategies
 
@@ -215,7 +215,7 @@ reports/
 
 ## Next Step
 
-The dashboard and `paisa shadow` command provide the live-delayed paper loop. A natural follow-up is scheduling `paisa shadow` for end-of-day reports and wiring the StockSharp harness into that cron path.
+The dashboard and `paisa shadow` command provide the Upstox-backed paper loop. A natural follow-up is scheduling `paisa shadow` for end-of-day reports and wiring the StockSharp harness into that cron path.
 
 ## Verification
 

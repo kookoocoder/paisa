@@ -213,14 +213,13 @@ What is not possible yet:
 - broker RMS/margin behavior testing,
 - true live execution latency measurement.
 
-Recommended free/no-demat data stack:
+Recommended no-live-orders data stack:
 
-1. Yahoo Finance via `yfinance`
-   - No demat account or broker API key required.
-   - Works for many NSE/BSE cash symbols using suffixes like `.NS` and `.BO`.
-   - Useful for daily and limited intraday research.
-   - Not exchange-authorized, not guaranteed, and intended for research/educational usage.
-   - Good first source for Nifty 50 cash-equity prototypes and dashboard candles.
+1. Upstox REST API
+   - Requires `UPSTOX_ANALYTICS_TOKEN` from a broker-backed Upstox developer app.
+   - Works with native instrument keys resolved from plain symbols such as `RELIANCE`.
+   - Suitable for historical and same-session candle research.
+   - Broker-backed data is the project foundation; do not add unofficial scraper fallbacks.
 
 2. NSE public reports and bhavcopies
    - Official exchange source for EOD and historical reports.
@@ -239,13 +238,13 @@ Recommended free/no-demat data stack:
    - Useful only for prototyping; verify symbol coverage and license before relying on them.
 
 5. Manual CSV imports
-   - Download NSE reports, Yahoo CSVs, or other public datasets.
+   - Download NSE reports, Upstox exports, or other licensed datasets.
    - Good for deterministic backtests and reproducible experiments.
 
 Architecture change for no-demat mode:
 
 ```text
-free/delayed data source
+Upstox historical data source
   -> normalized local store
   -> feature pipeline
   -> model/backtest
@@ -256,14 +255,14 @@ free/delayed data source
 
 Add a `BrokerAdapter` interface with at least two implementations:
 
-- `SimulatedBrokerAdapter`: fills orders using historical/live-delayed quotes with configurable spread, slippage, latency, and partial-fill assumptions.
+- `SimulatedBrokerAdapter`: fills orders using historical candles or broker-backed quote snapshots with configurable spread, slippage, latency, and partial-fill assumptions.
 - `LiveBrokerAdapter`: later implementation for DhanHQ, Upstox, Zerodha, etc.
 
 This keeps the project useful now and prevents rewrites later.
 
 Recommended first no-demat deliverable:
 
-- Use `yfinance` for Nifty 50 cash symbols and index data.
+- Use Upstox for Nifty 50 cash symbols and index data.
 - Use NSE public reports for EOD reference data.
 - Build a local Parquet/SQLite store.
 - Build a paper broker with realistic costs/slippage assumptions.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -24,6 +25,7 @@ from .indicators import (
     sma,
     stochastic,
 )
+from .config import load_ml_config, load_sentiment_config
 from .snapshot import MarketSnapshot
 
 
@@ -267,7 +269,13 @@ def _num(value: Any, default: float = 0.0) -> float:
     return float(value)
 
 
-def score_next_move(enriched: pd.DataFrame, filter_cfg: FilterConfig | None = None) -> dict[str, Any]:
+def score_next_move(
+    enriched: pd.DataFrame,
+    filter_cfg: FilterConfig | None = None,
+    *,
+    symbol: str | None = None,
+    headlines: list[str] | None = None,
+) -> dict[str, Any]:
     filter_cfg = filter_cfg or FilterConfig()
     last = enriched.iloc[-1]
     factor_scores = _factor_scores_from_row(last)
@@ -281,6 +289,10 @@ def score_next_move(enriched: pd.DataFrame, filter_cfg: FilterConfig | None = No
         + active_weights["volatility"] * factor_scores["volatility_score"]
     )
     score = max(0.0, min(100.0, 50.0 + weighted * 50.0))
+    model_signals: dict[str, Any] = {}
+    if symbol:
+        model_signals = _model_signals(symbol, enriched, headlines or default_headlines(symbol))
+        score = _blend_ensemble_score(score, model_signals)
     volume_ok = float(last.get("volume", 0) or 0) >= filter_cfg.min_volume
     spread_ok = float(last.get("estimated_spread_bps", 999) or 999) <= filter_cfg.max_spread_bps
 
@@ -302,6 +314,8 @@ def score_next_move(enriched: pd.DataFrame, filter_cfg: FilterConfig | None = No
     if regime == "LOW_LIQUIDITY":
         disqualifiers.append("low-liquidity regime")
     reasons = _factor_reasons(factor_scores, regime)
+    if model_signals:
+        reasons.extend(_ensemble_reasons(model_signals))
     confidence = round(abs(score - 50) / 50, 3)
 
     return {
@@ -323,6 +337,7 @@ def score_next_move(enriched: pd.DataFrame, filter_cfg: FilterConfig | None = No
             and regime != "LOW_LIQUIDITY"
             and score >= filter_cfg.min_signal_score
         ),
+        "model_signals": model_signals,
     }
 
 
@@ -340,6 +355,7 @@ def ai_market_snapshot(
     unrealised_pnl: float = 0.0,
     total_trades: int = 0,
     win_rate: float = 0.0,
+    headlines: list[str] | None = None,
 ) -> dict[str, Any]:
     filter_cfg = filter_cfg or FilterConfig()
     last = enriched.iloc[-1]
@@ -358,6 +374,7 @@ def ai_market_snapshot(
         unrealised_pnl=unrealised_pnl,
         total_trades=total_trades,
         win_rate=win_rate,
+        headlines=headlines,
         depth=depth,
         signal=signal,
     )
@@ -402,6 +419,8 @@ def ai_market_snapshot(
         "return_lag_1",
         "return_lag_3",
         "return_lag_5",
+        "ml_confidence",
+        "sentiment_composite",
     ]
     indicators = {
         key: (
@@ -417,7 +436,7 @@ def ai_market_snapshot(
     payload.update(
         {
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "data_source": "yfinance delayed candles; depth is synthetic estimate, not exchange DOM",
+            "data_source": "Upstox historical candles; depth is synthetic estimate, not exchange DOM",
             "symbol": symbol,
             "last_bar_time": pd.Timestamp(last["timestamp"]).isoformat(),
             "strategy_target_position": strategy_target,
@@ -450,11 +469,12 @@ def build_market_snapshot(
     win_rate: float = 0.0,
     depth: pd.DataFrame | None = None,
     signal: dict[str, Any] | None = None,
+    headlines: list[str] | None = None,
 ) -> MarketSnapshot:
     filter_cfg = filter_cfg or FilterConfig()
     last = enriched.iloc[-1]
     depth = estimate_depth(last) if depth is None else depth
-    signal = score_next_move(enriched, filter_cfg) if signal is None else signal
+    signal = score_next_move(enriched, filter_cfg, symbol=symbol, headlines=headlines) if signal is None else signal
     bid_rows = depth[depth["side"] == "bid"]
     ask_rows = depth[depth["side"] == "ask"]
     best_bid = float(bid_rows["price"].max()) if not bid_rows.empty else float(last["close"])
@@ -465,6 +485,7 @@ def build_market_snapshot(
     imbalance = ((bid_qty - ask_qty) / total_depth) if total_depth else 0.0
     score = (float(signal["score"]) - 50.0) / 50.0
     strategy_signal = "BUY" if strategy_target > 0 else "HOLD"
+    model_signals = signal.get("model_signals") or _model_signals(symbol, enriched, headlines)
 
     return MarketSnapshot(
         symbol=symbol,
@@ -511,6 +532,9 @@ def build_market_snapshot(
             "factor_scores": signal.get("factor_scores", {}),
             "regime": signal.get("regime", str(last.get("regime", "UNKNOWN"))),
             "active_weights": signal.get("active_weights", {}),
+            "ml": model_signals["ml"],
+            "sentiment": model_signals["sentiment"],
+            "arima": model_signals["arima"],
         },
         market_regime=str(signal.get("regime", last.get("regime", "UNKNOWN"))),
         factor_scores={key: float(value) for key, value in signal.get("factor_scores", {}).items()},
@@ -525,7 +549,71 @@ def build_market_snapshot(
         total_trades=int(total_trades),
         win_rate=float(win_rate),
         depth_levels=depth.to_dict(orient="records"),
+        ml_direction=str(model_signals["ml"]["direction"]),
+        ml_confidence=float(model_signals["ml"]["confidence"]),
+        sentiment_composite=float(model_signals["sentiment"]["composite"]),
+        sentiment_label=str(model_signals["sentiment"]["dominant"]),
+        arima_direction=str(model_signals["arima"]["direction"]),
     )
+
+
+def _model_signals(symbol: str, enriched: pd.DataFrame, headlines: list[str] | None) -> dict[str, Any]:
+    ml_signal: dict[str, Any] = {"direction": "NEUTRAL", "confidence": 0.0, "xgb_prob": 0.0, "lgbm_prob": 0.0}
+    arima_signal: dict[str, Any] = {"direction": "NEUTRAL", "forecast": None, "confidence": 0.0}
+    sentiment_signal: dict[str, Any] = {
+        "composite": 0.0,
+        "bullish_count": 0,
+        "bearish_count": 0,
+        "neutral_count": 0,
+        "dominant": "neutral",
+    }
+
+    ml_cfg = load_ml_config()
+    model_symbol = symbol.upper().removesuffix(".NS").removesuffix(".BO")
+    if ml_cfg.enabled:
+        try:
+            from .ml_models import predict as ml_predict
+
+            xgb_path = ml_cfg.model_dir / f"{model_symbol}_xgb.pkl"
+            lgbm_path = ml_cfg.model_dir / f"{model_symbol}_lgbm.pkl"
+            if xgb_path.exists() and lgbm_path.exists():
+                ml_signal = ml_predict(_canonical_candles(enriched), model_symbol, model_dir=str(ml_cfg.model_dir))
+            else:
+                ml_signal = {**ml_signal, "error": "cached model not found; run paisa train-ml"}
+        except Exception as exc:
+            ml_signal = {**ml_signal, "error": str(exc)}
+
+        if (
+            ml_cfg.use_arima_tiebreaker
+            and "error" not in ml_signal
+            and str(ml_signal.get("direction")) in {"UP", "DOWN"}
+            and float(ml_signal.get("confidence", 0.0)) < 0.60
+        ):
+            try:
+                from .arima_model import arima_next_direction
+
+                arima_signal = arima_next_direction(enriched["close"])
+            except Exception as exc:
+                arima_signal = {**arima_signal, "error": str(exc)}
+
+    sent_cfg = load_sentiment_config()
+    if sent_cfg.enabled:
+        try:
+            from .sentiment import get_dummy_sentiment, score_headlines
+
+            sentiment_signal = score_headlines(headlines) if headlines else get_dummy_sentiment()
+        except Exception as exc:
+            sentiment_signal = {**sentiment_signal, "error": str(exc)}
+
+    return {"ml": ml_signal, "sentiment": sentiment_signal, "arima": arima_signal}
+
+
+def _canonical_candles(enriched: pd.DataFrame) -> pd.DataFrame:
+    out = enriched[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+    out = out.rename(
+        columns={"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}
+    )
+    return out.set_index(pd.to_datetime(out.pop("timestamp"))).sort_index()
 
 
 def _optional_float(value: Any) -> float | None:

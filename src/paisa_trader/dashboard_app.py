@@ -10,6 +10,7 @@ from paisa_trader.data import load_candles
 from paisa_trader.intelligence import FilterConfig, ai_market_snapshot, enrich_indicators, estimate_depth, score_next_move
 from paisa_trader.shadow import ShadowSession, run_shadow_session
 from paisa_trader.strategies import build_strategy
+from paisa_trader.trade_stats import trade_pnl_from_backtest_results
 
 
 def _inr(value: float) -> str:
@@ -190,17 +191,94 @@ def render_symbol_tab(session: ShadowSession, symbol: str, filter_cfg: FilterCon
     return snapshot
 
 
+def _render_pnl_panel(session: ShadowSession, initial_cash: float) -> None:
+    stats = trade_pnl_from_backtest_results(session.results, initial_cash_per_symbol=initial_cash)
+    overall = stats.get("overall", {})
+    portfolio = stats.get("portfolio", {})
+    round_trips = stats.get("round_trips", [])
+    by_symbol = stats.get("by_symbol", {})
+    open_positions = stats.get("open_positions", {})
+
+    st.markdown("**Trade P&L**")
+    st.caption("Round-trip stats from paper fills after India-style costs. Long-only FIFO matching.")
+
+    cols = st.columns(8)
+    cols[0].metric("Closed trades", int(overall.get("closed_trades", 0)))
+    cols[1].metric("Win rate", f"{float(overall.get('win_rate', 0.0)) * 100:.1f}%")
+    cols[2].metric("Realized P&L", _inr(float(portfolio.get("realized_pnl_inr", 0.0))))
+    cols[3].metric("Unrealized P&L", _inr(float(portfolio.get("unrealized_pnl_inr", 0.0))))
+    cols[4].metric("Total costs", _inr(float(overall.get("total_costs_inr", 0.0))))
+    cols[5].metric("Avg win", _inr(float(overall.get("avg_win_inr", 0.0))))
+    cols[6].metric("Avg loss", _inr(float(overall.get("avg_loss_inr", 0.0))))
+    profit_factor = overall.get("profit_factor")
+    cols[7].metric("Profit factor", "n/a" if profit_factor is None else f"{profit_factor:.2f}")
+
+    detail_left, detail_right = st.columns(2)
+    with detail_left:
+        st.markdown("**P&L by symbol**")
+        if by_symbol:
+            symbol_rows = []
+            for symbol, symbol_stats in sorted(by_symbol.items()):
+                open_stats = symbol_stats.get("open") or {}
+                symbol_rows.append(
+                    {
+                        "symbol": symbol,
+                        "closed_trades": symbol_stats.get("closed_trades", 0),
+                        "win_rate_pct": round(float(symbol_stats.get("win_rate", 0.0)) * 100, 1),
+                        "net_pnl_inr": symbol_stats.get("net_pnl_inr", 0.0),
+                        "open_unrealized_inr": open_stats.get("unrealized_pnl_inr", 0.0),
+                    }
+                )
+            st.dataframe(pd.DataFrame(symbol_rows), width="stretch", hide_index=True)
+        else:
+            st.write("No closed round trips yet.")
+
+    with detail_right:
+        st.markdown("**Open positions**")
+        if open_positions:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "symbol": symbol,
+                            "quantity": pos.get("quantity", 0),
+                            "mark_price_inr": pos.get("mark_price_inr", 0.0),
+                            "cost_basis_inr": pos.get("cost_basis_inr", 0.0),
+                            "unrealized_pnl_inr": pos.get("unrealized_pnl_inr", 0.0),
+                        }
+                        for symbol, pos in sorted(open_positions.items())
+                    ]
+                ),
+                width="stretch",
+                hide_index=True,
+            )
+        else:
+            st.write("No open paper positions.")
+
+    st.markdown("**Closed round trips**")
+    if round_trips:
+        st.dataframe(
+            pd.DataFrame(round_trips)[
+                ["symbol", "entry_time", "exit_time", "quantity", "entry_price", "exit_price", "net_pnl_inr", "return_pct", "result"]
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+    else:
+        st.write("No closed round trips yet.")
+
+
 def main() -> None:
     st.set_page_config(page_title="Paisa Trader", page_icon="PT", layout="wide")
     st.title("Paisa Trader")
-    st.caption("Live-delayed paper dashboard: indicators, filters, AI snapshots, simulated fills, no real orders.")
+    st.caption("Upstox-backed paper dashboard: indicators, filters, AI snapshots, simulated fills, no real orders.")
 
     with st.sidebar:
         st.header("Market view")
         symbols = st.multiselect("Symbols", DEFAULT_SYMBOLS, default=DEFAULT_SYMBOLS[:3])
         strategy = st.selectbox("Strategy", ["ma-cross", "buy-hold", "mean-reversion"])
         period = st.selectbox("Period", ["1mo", "3mo", "6mo", "1y", "2y", "60d", "90d"], index=5)
-        interval = st.selectbox("Interval", ["1d", "1h", "30m", "15m", "5m"], index=0)
+        interval = st.selectbox("Interval", ["1day", "60minute", "30minute", "15minute", "5minute"], index=0)
         st.header("Filters")
         min_volume = st.number_input("Min volume", min_value=0.0, value=100_000.0, step=50_000.0)
         max_spread_bps = st.number_input("Max estimated spread bps", min_value=1.0, value=25.0, step=1.0)
@@ -211,7 +289,7 @@ def main() -> None:
         slippage_bps = st.number_input("Slippage (bps)", min_value=0.0, value=2.0, step=0.5)
         max_position_pct = st.slider("Max position %", min_value=0.05, max_value=1.0, value=0.20, step=0.05)
         export_bridge = st.checkbox("Export StockSharp bridge on refresh", value=False)
-        refresh = st.button("Refresh delayed data", type="primary", width="stretch")
+        refresh = st.button("Refresh Upstox data", type="primary", width="stretch")
 
     if not symbols:
         st.warning("Select at least one symbol in the sidebar.")
@@ -222,7 +300,7 @@ def main() -> None:
         _load_session.clear()
 
     if refresh or "session" not in st.session_state:
-        with st.spinner("Downloading delayed candles and replaying shadow strategy..."):
+        with st.spinner("Downloading Upstox candles and replaying shadow strategy..."):
             session = _load_session(
                 tuple(symbols),
                 period,
@@ -256,6 +334,8 @@ def main() -> None:
     st.markdown("**Portfolio summary**")
     st.dataframe(summary_df, width="stretch")
 
+    _render_pnl_panel(session, initial_cash)
+
     st.markdown("**AI harness contract**")
     st.caption("Each symbol tab exposes a JSON snapshot with indicators, filters, estimated depth, signal score, and current paper target.")
 
@@ -273,7 +353,7 @@ def main() -> None:
                     "strategy": session.strategy,
                     "period": session.period,
                     "interval": session.interval,
-                    "data_source": "yfinance delayed candles; synthetic depth estimates",
+                    "data_source": "Upstox historical candles; synthetic depth estimates",
                 },
                 "symbols": snapshots,
             },

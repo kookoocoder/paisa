@@ -24,6 +24,7 @@ from .ai_harness.prediction_tracker import (
     prepare_future_predictions,
     settle_due_predictions,
 )
+from .trade_stats import trade_pnl_stats
 from .broker import SimulatedBroker
 from .calibration import ConfidenceCalibrator
 from .config import AIHarnessConfig, BrokerConfig, DEFAULT_SYMBOLS
@@ -36,7 +37,7 @@ from .wavetrail import WaveTrailConfig, build_wavetrail
 class AIWebConfig:
     symbols: list[str]
     period: str = "5d"
-    interval: str = "5m"
+    interval: str = "5minute"
     tick_seconds: float = 1.0
     loop: bool = True
     force_refresh: bool = True
@@ -99,7 +100,7 @@ class AIReplayEngine:
             self._latest_snapshots = {}
             self._data_windows = {
                 symbol: {
-                    "source": "yfinance delayed historical candles replayed as live paper data",
+                    "source": "Upstox historical candles replayed as paper data",
                     "start": pd.Timestamp(candles["timestamp"].iloc[0]).isoformat(),
                     "end": pd.Timestamp(candles["timestamp"].iloc[-1]).isoformat(),
                     "bars": len(candles),
@@ -228,7 +229,6 @@ class AIReplayEngine:
             self._latest_snapshots[symbol] = snapshot.to_dict()
             self._decisions.append(record)
             self._decisions = self._decisions[-300:]
-            self._event("ai_decision", f"{symbol} {decision.action} ({decision.confidence:.0%})", record)
             if route.fill:
                 self._event("fill", f"{route.fill['side']} {route.fill['quantity']} {symbol}", route.fill)
             self._indexes[symbol] = idx + 1
@@ -309,7 +309,7 @@ class AIReplayEngine:
                 "model_provider": self.config.ai.model_provider,
                 "model_name": self.config.ai.model_name,
                 "local_url": self.config.ai.local_url,
-                "data_source": "yfinance delayed historical candles replay",
+                "data_source": "Upstox historical candles replay",
                 "model_explanation": _model_explanation(self.config.ai.model_provider, self.config.ai.local_url),
             },
             "portfolio": {
@@ -324,8 +324,14 @@ class AIReplayEngine:
             "symbols": {symbol: self._symbol_state_unlocked(symbol) for symbol in self.config.symbols},
             "ai_decisions": self._decisions[-100:],
             "prediction_stats": prediction_stats(self._decisions),
+            "trade_pnl_stats": trade_pnl_stats(
+                [_jsonable(asdict(fill)) for fill in self.broker.fills],
+                initial_cash=initial,
+                latest_prices=self._latest_prices,
+                positions=dict(self.broker.positions),
+            ),
             "calibration": self._calibration_state(),
-            "events": self._events[-100:],
+            "events": [event for event in self._events[-100:] if event.get("kind") in {"fill", "system"}],
         }
 
     def _calibration_state(self) -> dict[str, Any]:
@@ -434,7 +440,7 @@ def create_app(config: AIWebConfig | None = None) -> FastAPI:
 def build_ai_web_config(
     symbols: list[str] | None = None,
     period: str = "5d",
-    interval: str = "5m",
+    interval: str = "5minute",
     tick_seconds: float = 1.0,
     loop: bool = True,
     force_refresh: bool = True,

@@ -27,7 +27,7 @@ def test_replay_engine_steps_and_publishes_state():
     config = ReplayConfig(
         symbols=["TEST.NS"],
         period="5d",
-        interval="5m",
+        interval="5minute",
         strategy="ma-cross",
         tick_seconds=0.01,
         force_refresh=False,

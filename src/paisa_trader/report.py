@@ -22,7 +22,7 @@ def write_backtest_report(results: list[BacktestResult], strategy: str) -> Path:
         handle.write(f"# Backtest Report: {strategy}\n\n")
         handle.write("This is a simulated paper-trading report. It is not live execution evidence.\n\n")
         handle.write("## Summary\n\n")
-        handle.write(summary.to_markdown(index=False))
+        handle.write(_summary_markdown(summary))
         handle.write("\n\n")
 
     for result in results:
@@ -32,3 +32,12 @@ def write_backtest_report(results: list[BacktestResult], strategy: str) -> Path:
         result.fills.to_csv(report_dir / f"{safe}_fills.csv", index=False)
 
     return report_dir
+
+
+def _summary_markdown(summary: pd.DataFrame) -> str:
+    try:
+        return summary.to_markdown(index=False)
+    except ImportError:
+        rows = [summary.columns.tolist(), ["---"] * len(summary.columns)]
+        rows.extend(summary.astype(str).values.tolist())
+        return "\n".join("| " + " | ".join(row) + " |" for row in rows)

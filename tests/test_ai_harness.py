@@ -198,7 +198,6 @@ def test_decision_router_blocks_low_confidence_buy():
 
 
 def test_web_engine_settles_multi_horizon_predictions():
-    pytest.importorskip("yfinance")
     from paisa_trader.ai_web_server import AIReplayEngine, AIWebConfig
 
     class HorizonRunner:

@@ -12,7 +12,7 @@ The examples provided in this folder serve as practical guides to various aspect
 - **Advanced Trading Algorithms**: More complex examples that implement full [trading strategies](https://doc.stocksharp.com/topics/api/strategies.html) or algorithms using the StockSharp API.
 - **Data Management**: Scripts that show how to fetch, store, and manage historical [market data](https://doc.stocksharp.com/topics/api/market_data_storage.html) for analysis.
 - **Utility Tools**: Utility programs that assist with account management, [order placement](https://doc.stocksharp.com/topics/api/orders_management.html), and other trading operations.
-- **Paisa Paper Harness**: `11_PaisaPaperHarness` consumes the root project's `paisa stocksharp-export` output and replays yfinance/NSE-derived candles and automated strategy signals in a no-demat paper workflow.
+- **Paisa Paper Harness**: `11_PaisaPaperHarness` consumes the root project's `paisa stocksharp-export` output and replays Upstox/NSE-derived candles and automated strategy signals in a no-demat paper workflow.
 
 ## Purpose
 

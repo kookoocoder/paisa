@@ -2,13 +2,13 @@
 
 This sample is the StockSharp-facing half of the no-demat workflow.
 
-The Python project at the repository root downloads free/delayed market data with `yfinance`, fetches NSE public reports, computes automated strategy targets, and exports a bridge package:
+The Python project at the repository root downloads Upstox historical candles, fetches NSE public reports, computes automated strategy targets, and exports a bridge package:
 
 ```bash
 .venv/bin/paisa stocksharp-export \
-  --symbols RELIANCE.NS TCS.NS INFY.NS \
+  --symbols RELIANCE TCS INFY \
   --period 3mo \
-  --interval 1d \
+  --interval 1day \
   --strategy ma-cross
 ```
 
@@ -39,7 +39,7 @@ dotnet run --project StockSharp/Samples/11_PaisaPaperHarness/11_PaisaPaperHarnes
 
 The original project plan said:
 
-- Python handles free data, features, and research.
+- Python handles Upstox data, features, and research.
 - StockSharp acts as the event-driven trading/paper execution harness.
 - Live broker adapters can be added later when broker credentials exist.
 

@@ -31,7 +31,7 @@ TradeDecision schema:
 }
 
 Rules:
-- Only BUY if confidence > 0.65 and intelligence_gate is true.
+- Only BUY when confidence meets the configured router threshold and intelligence_gate is true.
 - Only one open position per symbol at a time.
 - future_predictions is mandatory. Include exactly two entries: horizon_bars 1 labeled "+5m" and horizon_bars 3 labeled "+15m".
 - direction must be UP, DOWN, or FLAT. Use FLAT when expected move is too small to matter.

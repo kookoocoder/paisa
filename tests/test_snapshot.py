@@ -34,6 +34,8 @@ def test_market_snapshot_serializes_to_json_safe_dict():
     assert payload["next_move_label"] in {"STRONG_BUY", "BUY", "NEUTRAL", "SELL", "STRONG_SELL"}
     assert set(payload["synthetic_depth"]) == {"bid_qty", "ask_qty", "imbalance"}
     assert payload["depth_levels"]
+    assert payload["ml_direction"] in {"UP", "DOWN", "NEUTRAL"}
+    assert payload["sentiment_label"] in {"bullish", "bearish", "neutral"}
 
 
 def test_market_snapshot_ai_prompt_contains_key_sections():
@@ -42,6 +44,7 @@ def test_market_snapshot_ai_prompt_contains_key_sections():
 
     assert "PRICE ACTION" in prompt
     assert "COMPOSITE INTELLIGENCE" in prompt
+    assert "ML MODEL SIGNALS" in prompt
     assert "PORTFOLIO STATE" in prompt
 
 

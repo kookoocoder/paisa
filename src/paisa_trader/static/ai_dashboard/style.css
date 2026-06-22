@@ -59,6 +59,7 @@ button, select {
   color: var(--blue);
 }
 .pill.ok { background: rgba(34, 197, 94, 0.14); color: var(--green); }
+.pill.buy { background: rgba(34, 197, 94, 0.14); color: var(--green); }
 .pill.warn { background: rgba(245, 158, 11, 0.15); color: var(--amber); }
 .pill.bad { background: rgba(239, 68, 68, 0.14); color: var(--red); }
 
@@ -150,9 +151,95 @@ th {
 
 .muted { color: var(--muted); }
 
+.pnl-panel h3 {
+  margin: 18px 0 10px;
+  font-size: 14px;
+}
+
+.pnl-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.pnl-metrics article {
+  background: #0b1118;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.pnl-metrics span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pnl-metrics strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 20px;
+}
+
+.pnl-metrics small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.pnl-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.capital-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.capital-grid article {
+  background: #0b1118;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.trade-ledger { display: grid; gap: 10px; max-height: 420px; overflow: auto; margin-bottom: 18px; }
+.ledger-empty {
+  color: var(--muted);
+  padding: 16px;
+  background: #0b1118;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+.ledger-item {
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--blue);
+  border-radius: 10px;
+  padding: 12px;
+  background: #0b1118;
+}
+.ledger-item.buy-side { border-left-color: var(--green); }
+.ledger-item.sell-side { border-left-color: var(--red); }
+.ledger-top {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ledger-qty { color: var(--muted); font-size: 12px; }
+.ledger-body time { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+.ledger-body small { color: var(--muted); }
+
 @media (max-width: 1050px) {
   header { flex-direction: column; align-items: flex-start; }
-  .metrics, main { grid-template-columns: 1fr; }
+  .metrics, main, .pnl-metrics, .pnl-grid, .capital-grid { grid-template-columns: 1fr; }
   .card.wide { grid-column: span 1; }
 }
 :root {

@@ -149,7 +149,7 @@ def extended_prediction_context(
         summaries.
 
     Example:
-        ``extended_prediction_context(decisions, "RELIANCE.NS")`` returns
+        ``extended_prediction_context(decisions, "RELIANCE")`` returns
         recent hit rates split by horizon and market regime.
     """
     window_sizes = [20, 50, 100] if window_sizes is None else window_sizes

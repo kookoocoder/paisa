@@ -14,3 +14,4 @@ data/raw/
 data/processed/
 data/calibration.json
 reports/
+models/

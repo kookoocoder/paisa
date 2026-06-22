@@ -26,6 +26,7 @@ from .calibration import ConfidenceCalibrator
 from .config import AIHarnessConfig, BrokerConfig, REPORTS_DIR, ensure_dirs
 from .data import CandleRequest, download_candles, load_candles
 from .intelligence import FilterConfig, build_market_snapshot, enrich_indicators
+from .trade_stats import trade_pnl_stats
 
 
 @dataclass(frozen=True)
@@ -135,8 +136,36 @@ def write_ai_session_report(session_dir: Path | None = None) -> Path:
     directory = session_dir or latest_ai_session_dir()
     summary = _read_json(directory / "summary.json", {})
     prediction_stats = summary.get("prediction_stats", {})
+    trade_stats = summary.get("trade_pnl_stats") or _trade_pnl_from_session(directory, summary)
     decisions = _read_jsonl(directory / "decisions.jsonl")
     hit_rate_pct = float(prediction_stats.get("hit_rate", 0.0)) * 100
+    pnl = trade_stats.get("overall", {})
+    portfolio = trade_stats.get("portfolio", {})
+    win_rate_pct = float(pnl.get("win_rate", 0.0)) * 100
+    trade_rows = "\n".join(
+        "<tr>"
+        f"<td>{escape(str(item.get('symbol', '')))}</td>"
+        f"<td>{escape(str(item.get('entry_time', '')))}</td>"
+        f"<td>{escape(str(item.get('exit_time', '')))}</td>"
+        f"<td>{int(item.get('quantity', 0))}</td>"
+        f"<td>{float(item.get('entry_price', 0.0)):.2f}</td>"
+        f"<td>{float(item.get('exit_price', 0.0)):.2f}</td>"
+        f"<td>{float(item.get('net_pnl_inr', 0.0)):+,.2f}</td>"
+        f"<td>{float(item.get('return_pct', 0.0)):.2f}%</td>"
+        f"<td>{escape(str(item.get('result', '')))}</td>"
+        "</tr>"
+        for item in trade_stats.get("round_trips", [])
+    )
+    symbol_rows = "\n".join(
+        "<tr>"
+        f"<td>{escape(symbol)}</td>"
+        f"<td>{int(stats.get('closed_trades', 0))}</td>"
+        f"<td>{float(stats.get('win_rate', 0.0)) * 100:.1f}%</td>"
+        f"<td>{float(stats.get('net_pnl_inr', 0.0)):+,.2f}</td>"
+        f"<td>{float((stats.get('open') or {}).get('unrealized_pnl_inr', 0.0)):+,.2f}</td>"
+        "</tr>"
+        for symbol, stats in sorted(trade_stats.get("by_symbol", {}).items())
+    )
     rows = "\n".join(
         "<tr>"
         f"<td>{escape(str(item.get('timestamp', '')))}</td>"
@@ -155,23 +184,53 @@ def write_ai_session_report(session_dir: Path | None = None) -> Path:
   <title>Paisa AI Session Report</title>
   <style>
     body {{ font-family: system-ui, sans-serif; margin: 24px; color: #18202a; }}
-    table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
+    table {{ border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 24px; }}
     th, td {{ border-bottom: 1px solid #dfe4ea; padding: 8px; text-align: left; vertical-align: top; }}
     th {{ background: #f4f6f8; }}
     .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 16px 0; }}
     .card {{ border: 1px solid #dfe4ea; border-radius: 8px; padding: 12px; }}
     .card strong {{ display: block; font-size: 22px; margin-top: 6px; }}
+    .positive {{ color: #0a7a44; }}
+    .negative {{ color: #b42318; }}
   </style>
 </head>
 <body>
   <h1>Paisa AI Session Report</h1>
   <p>Paper-only AI research harness. No real broker execution.</p>
   {f"<p><strong>Status:</strong> {escape(str(summary.get('status', 'COMPLETE')))} &mdash; {escape(str(summary.get('progress', '')))}</p>" if summary.get('status') else ""}
+  <h2>Portfolio</h2>
   <div class="cards">
     <div class="card">Final equity<strong>{summary.get('final_equity', 0):,.2f}</strong></div>
     <div class="card">Return %<strong>{summary.get('total_return_pct', 0):.2f}%</strong></div>
-    <div class="card">AI decisions<strong>{summary.get('decisions', 0)}</strong></div>
+    <div class="card">Realized P&L<strong class="{'positive' if portfolio.get('realized_pnl_inr', 0) >= 0 else 'negative'}">{portfolio.get('realized_pnl_inr', 0):+,.2f}</strong></div>
+    <div class="card">Unrealized P&L<strong class="{'positive' if portfolio.get('unrealized_pnl_inr', 0) >= 0 else 'negative'}">{portfolio.get('unrealized_pnl_inr', 0):+,.2f}</strong></div>
+    <div class="card">Total costs<strong>{pnl.get('total_costs_inr', 0):,.2f}</strong></div>
     <div class="card">Broker fills<strong>{summary.get('fills', 0)}</strong></div>
+  </div>
+  <h2>Trade P&L</h2>
+  <div class="cards">
+    <div class="card">Closed trades<strong>{pnl.get('closed_trades', 0)}</strong></div>
+    <div class="card">Win rate<strong>{win_rate_pct:.1f}%</strong></div>
+    <div class="card">Wins / losses<strong>{pnl.get('winning_trades', 0)} / {pnl.get('losing_trades', 0)}</strong></div>
+    <div class="card">Net P&L (closed)<strong class="{'positive' if pnl.get('net_pnl_inr', 0) >= 0 else 'negative'}">{pnl.get('net_pnl_inr', 0):+,.2f}</strong></div>
+    <div class="card">Avg win<strong class="positive">{pnl.get('avg_win_inr', 0):+,.2f}</strong></div>
+    <div class="card">Avg loss<strong class="negative">{pnl.get('avg_loss_inr', 0):+,.2f}</strong></div>
+    <div class="card">Profit factor<strong>{pnl.get('profit_factor') if pnl.get('profit_factor') is not None else 'n/a'}</strong></div>
+    <div class="card">Expectancy / trade<strong>{pnl.get('expectancy_inr', 0):+,.2f}</strong></div>
+  </div>
+  <h3>P&L by Symbol</h3>
+  <table>
+    <thead><tr><th>Symbol</th><th>Closed trades</th><th>Win rate</th><th>Net P&L (INR)</th><th>Open unrealized</th></tr></thead>
+    <tbody>{symbol_rows or '<tr><td colspan="5">No trades recorded.</td></tr>'}</tbody>
+  </table>
+  <h3>Round-Trip Trades</h3>
+  <table>
+    <thead><tr><th>Symbol</th><th>Entry</th><th>Exit</th><th>Qty</th><th>Entry price</th><th>Exit price</th><th>Net P&L</th><th>Return</th><th>Result</th></tr></thead>
+    <tbody>{trade_rows or '<tr><td colspan="9">No closed round trips yet.</td></tr>'}</tbody>
+  </table>
+  <h2>Prediction Accuracy</h2>
+  <div class="cards">
+    <div class="card">AI decisions<strong>{summary.get('decisions', 0)}</strong></div>
     <div class="card">Settled predictions<strong>{prediction_stats.get('settled', 0)}</strong></div>
     <div class="card">Directional predictions<strong>{prediction_stats.get('directional', 0)}</strong></div>
     <div class="card">Prediction hit rate<strong>{hit_rate_pct:.1f}%</strong></div>
@@ -189,6 +248,33 @@ def write_ai_session_report(session_dir: Path | None = None) -> Path:
     output = directory / "report.html"
     output.write_text(html, encoding="utf-8")
     return output
+
+
+def _trade_pnl_from_session(directory: Path, summary: dict[str, Any]) -> dict[str, Any]:
+    fills = _read_jsonl(directory / "fills.jsonl")
+    latest_prices = _latest_prices_from_snapshots(directory)
+    return trade_pnl_stats(
+        fills,
+        initial_cash=float(summary.get("initial_cash", 0.0)),
+        latest_prices=latest_prices,
+        positions=summary.get("positions", {}),
+    )
+
+
+def _latest_prices_from_snapshots(directory: Path) -> dict[str, float]:
+    prices: dict[str, float] = {}
+    snapshots_path = directory / "snapshots.jsonl"
+    if not snapshots_path.exists():
+        return prices
+    for line in snapshots_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        snapshot = json.loads(line)
+        symbol = str(snapshot.get("symbol", ""))
+        close = snapshot.get("close")
+        if symbol and close is not None:
+            prices[symbol] = float(close)
+    return prices
 
 
 def latest_ai_session_dir() -> Path:
@@ -263,6 +349,7 @@ def _summary(
 ) -> dict[str, Any]:
     final_equity = broker.mark_to_market(latest_prices)
     accepted = sum(1 for item in decisions if item["route_accepted"])
+    fills = [_jsonable(asdict(fill)) for fill in broker.fills]
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "symbols": symbols,
@@ -275,6 +362,12 @@ def _summary(
         "cash": round(broker.cash, 2),
         "positions": dict(broker.positions),
         "prediction_stats": prediction_stats(decisions),
+        "trade_pnl_stats": trade_pnl_stats(
+            fills,
+            initial_cash=initial_cash,
+            latest_prices=latest_prices,
+            positions=dict(broker.positions),
+        ),
         "calibration": _calibration_summary(calibrator, base_confidence_threshold),
     }
 

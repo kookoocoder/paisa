@@ -28,7 +28,7 @@ class ShadowSession:
 def _write_shadow_metadata(session: ShadowSession) -> None:
     payload = {
         "refreshed_at": session.refreshed_at.isoformat(),
-        "data_source": "yfinance (delayed)",
+        "data_source": "Upstox historical candles",
         "purpose": "shadow paper-trading session — no live broker execution",
         "strategy": session.strategy,
         "period": session.period,

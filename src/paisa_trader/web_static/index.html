@@ -12,7 +12,7 @@
         <div class="mark">PT</div>
         <div>
           <h1>Paisa Trader</h1>
-          <p>Autonomous intraday replay</p>
+          <p id="modeLabel">Autonomous intraday replay</p>
         </div>
       </div>
       <div class="panel compact">
@@ -38,7 +38,7 @@
     <main>
       <section class="topbar">
         <div>
-          <h2>Streaming historical market as live paper environment</h2>
+          <h2 id="pageTitle">Streaming historical market as live paper environment</h2>
           <p id="clock">Waiting for replay...</p>
         </div>
         <div class="top-actions">
@@ -52,7 +52,34 @@
         <div class="metric"><span>Return</span><strong id="returnPct">--</strong></div>
         <div class="metric"><span>Trades</span><strong id="tradeCount">--</strong></div>
         <div class="metric"><span>Costs</span><strong id="totalCosts">--</strong></div>
-        <div class="metric"><span>Replay Progress</span><strong id="progressPct">--</strong></div>
+        <div class="metric" id="progressMetric"><span>Replay Progress</span><strong id="progressPct">--</strong></div>
+        <div class="metric live-only hidden"><span>Market Status</span><strong id="marketStatus">--</strong></div>
+        <div class="metric live-only hidden"><span>NSE Stocks</span><strong id="universeCount">--</strong></div>
+      </section>
+
+      <section class="card wide live-only hidden" id="marketScreener">
+        <div class="card-head">
+          <h3>Live NSE Market</h3>
+          <input id="marketSearch" type="search" placeholder="Search symbol or company..." />
+        </div>
+        <p class="note" id="marketNote">Delayed Upstox quotes for all NSE equities. Paper strategy runs on the trade watchlist only.</p>
+        <div class="screener-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Name</th>
+                <th>LTP</th>
+                <th>Change %</th>
+                <th>Open</th>
+                <th>High</th>
+                <th>Low</th>
+                <th>Volume</th>
+              </tr>
+            </thead>
+            <tbody id="marketBody"></tbody>
+          </table>
+        </div>
       </section>
 
       <section class="grid">
@@ -83,8 +110,10 @@
         </article>
 
         <article class="card wide">
-          <h3>Activity Log</h3>
-          <div id="activity" class="activity"></div>
+          <h3>Capital &amp; Trades</h3>
+          <p class="note">Executed paper trades only. Blocked signals are hidden.</p>
+          <div class="capital-grid" id="capitalGrid"></div>
+          <div id="tradeLedger" class="trade-ledger"></div>
         </article>
 
         <article class="card">

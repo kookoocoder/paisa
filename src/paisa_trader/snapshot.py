@@ -56,6 +56,11 @@ class MarketSnapshot:
     total_trades: int = 0
     win_rate: float = 0.0
     depth_levels: list[dict[str, Any]] = field(default_factory=list)
+    ml_direction: str = "NEUTRAL"
+    ml_confidence: float = 0.0
+    sentiment_composite: float = 0.0
+    sentiment_label: str = "neutral"
+    arima_direction: str = "NEUTRAL"
 
     def to_ai_prompt(self) -> str:
         return "\n".join(
@@ -97,6 +102,14 @@ class MarketSnapshot:
                 f"  Factor scores: {self.factor_scores}",
                 f"  Intelligence gate: {self.intelligence_gate}",
                 f"  Signal breakdown: {self.signal_components}",
+                "",
+                "ML MODEL SIGNALS",
+                f"  XGBoost + LightGBM ensemble direction: {self.ml_direction} (confidence: {_fmt_pct(self.ml_confidence)})",
+                f"  FinBERT news sentiment: {self.sentiment_label} (composite score: {self.sentiment_composite:+.2f})",
+                f"  ARIMA trend direction: {self.arima_direction}",
+                "  Weight these quantitative outputs alongside the technical indicators above.",
+                "  If ML confidence is above 70% and sentiment aligns, confidence may increase.",
+                "  If ML and sentiment conflict, be cautious or prefer HOLD.",
                 "",
                 "ACTIVE STRATEGY",
                 f"  Strategy: {self.active_strategy} | Signal: {self.strategy_signal}",

@@ -6,8 +6,8 @@ This note maps the local trading source material to concrete Paisa modules. It i
 
 - `technical analysis - PDF Room.pdf`: use as a taxonomy for chart calculation: trend, momentum, volatility, volume, and market structure.
 - `Algorithmic Trading - 2013 - Chan - Front Matter.pdf`: use as a roadmap for backtesting/execution, mean reversion, momentum, and risk management.
-- `automated_intraday_india_plan.md`: use as the project-specific constraint layer for Indian markets, delayed/free data, costs, synthetic depth, and paper-only validation.
-- `README.md`: use as the current product contract: no real orders, delayed data, simulated broker, StockSharp bridge, and baseline strategies.
+- `automated_intraday_india_plan.md`: use as the project-specific constraint layer for Indian markets, broker-backed data, costs, synthetic depth, and paper-only validation.
+- `README.md`: use as the current product contract: no real orders, Upstox-backed data, simulated broker, StockSharp bridge, and baseline strategies.
 
 ## Concept To Module Map
 
@@ -38,5 +38,5 @@ The first pass should create a reliable calculation core:
 
 - Prefer deterministic numeric formulas over narrative chart labels.
 - Keep the existing snapshot and dashboard contracts backward compatible.
-- Use current delayed `yfinance` data only for research and UI demonstration.
+- Use Upstox data for candles and quote snapshots; synthetic depth remains a research estimate.
 - Treat hit rate as diagnostic, not as proof of edge; later phases should add net expectancy and walk-forward validation.

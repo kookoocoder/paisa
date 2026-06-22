@@ -10,12 +10,12 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import BrokerConfig, DEFAULT_SYMBOLS
 from .intelligence import FilterConfig
-from .replay import ReplayConfig, ReplayEngine
+from .live_engine import LivePaperConfig, LivePaperEngine
 
 
-def create_app(config: ReplayConfig | None = None) -> FastAPI:
-    cfg = config or ReplayConfig(symbols=DEFAULT_SYMBOLS[:3])
-    engine = ReplayEngine(cfg)
+def create_app(config: LivePaperConfig | None = None) -> FastAPI:
+    cfg = config or LivePaperConfig(trade_symbols=DEFAULT_SYMBOLS)
+    engine = LivePaperEngine(cfg)
     static_dir = Path(__file__).resolve().parent / "web_static"
 
     @asynccontextmanager
@@ -29,7 +29,7 @@ def create_app(config: ReplayConfig | None = None) -> FastAPI:
             with suppress(asyncio.CancelledError):
                 await task
 
-    app = FastAPI(title="Paisa Intraday Replay", lifespan=lifespan)
+    app = FastAPI(title="Paisa Live Paper Trading", lifespan=lifespan)
     app.state.engine = engine
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -40,6 +40,18 @@ def create_app(config: ReplayConfig | None = None) -> FastAPI:
     @app.get("/api/state")
     async def state():
         return JSONResponse(await engine.state())
+
+    @app.get("/api/universe")
+    async def universe():
+        current = await engine.state()
+        return JSONResponse(
+            {
+                "count": current.get("universe_count", 0),
+                "last_quote_refresh": current.get("last_quote_refresh"),
+                "market_status": current.get("market_status"),
+                "rows": current.get("market_universe", []),
+            }
+        )
 
     @app.get("/api/ai-snapshot")
     async def ai_snapshot():
@@ -75,14 +87,12 @@ def create_app(config: ReplayConfig | None = None) -> FastAPI:
     return app
 
 
-def build_replay_config(
-    symbols: list[str] | None = None,
+def build_live_config(
+    trade_symbols: list[str] | None = None,
     period: str = "5d",
     interval: str = "5minute",
     strategy: str = "ma-cross",
-    tick_seconds: float = 1.0,
-    loop: bool = True,
-    force_refresh: bool = True,
+    poll_seconds: float = 15.0,
     use_intelligence_filter: bool = True,
     initial_cash: float = 100_000.0,
     spread_bps: float = 3.0,
@@ -91,15 +101,13 @@ def build_replay_config(
     min_volume: float = 100_000.0,
     max_spread_bps: float = 25.0,
     min_signal_score: float = 55.0,
-) -> ReplayConfig:
-    return ReplayConfig(
-        symbols=symbols or DEFAULT_SYMBOLS[:3],
+) -> LivePaperConfig:
+    return LivePaperConfig(
+        trade_symbols=trade_symbols or DEFAULT_SYMBOLS,
         period=period,
         interval=interval,
         strategy=strategy,
-        tick_seconds=tick_seconds,
-        loop=loop,
-        force_refresh=force_refresh,
+        poll_seconds=poll_seconds,
         use_intelligence_filter=use_intelligence_filter,
         broker=BrokerConfig(
             initial_cash=initial_cash,

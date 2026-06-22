@@ -32,10 +32,30 @@ async function control(action) {
 
 function render() {
   if (!state) return;
+  const isLive = state.mode === "live";
+  document.body.classList.toggle("live-mode", isLive);
+  document.querySelectorAll(".live-only").forEach((el) => el.classList.toggle("hidden", !isLive));
+  document.getElementById("modeLabel").textContent = isLive ? "Live paper trading" : "Autonomous intraday replay";
+  document.getElementById("pageTitle").textContent = isLive
+    ? "Live Upstox market paper trading"
+    : "Streaming historical market as live paper environment";
+  document.getElementById("progressMetric").classList.toggle("hidden", isLive);
+
   const symbols = Object.keys(state.symbols);
   if (!selectedSymbol || !state.symbols[selectedSymbol]) selectedSymbol = symbols[0];
 
-  document.getElementById("clock").textContent = `Replay update ${new Date(state.generated_at).toLocaleString()} · ${state.config.interval} bars from ${state.config.period}`;
+  if (isLive) {
+    const refresh = state.last_quote_refresh ? new Date(state.last_quote_refresh).toLocaleString() : "pending";
+    document.getElementById("clock").textContent = `Live quote refresh ${refresh} · poll every ${state.config.poll_seconds}s · strategy on ${state.config.trade_symbols.join(", ")}`;
+    document.getElementById("marketStatus").textContent = state.market_status || "unknown";
+    document.getElementById("universeCount").textContent = String(state.universe_count || 0);
+    renderMarketScreener();
+  } else {
+    document.getElementById("clock").textContent = `Replay update ${new Date(state.generated_at).toLocaleString()} · ${state.config.interval} bars from ${state.config.period}`;
+    const sym = state.symbols[selectedSymbol];
+    const progress = sym ? ((sym.cursor + 1) / Math.max(1, sym.total_bars)) * 100 : 0;
+    document.getElementById("progressPct").textContent = `${progress.toFixed(1)}%`;
+  }
   const running = document.getElementById("runningPill");
   running.textContent = state.running ? "running" : "paused";
   running.className = `pill ${state.running ? "ok" : "warn"}`;
@@ -46,9 +66,6 @@ function render() {
   const fills = state.portfolio.fills || [];
   document.getElementById("tradeCount").textContent = fills.length;
   document.getElementById("totalCosts").textContent = inr(fills.reduce((sum, f) => sum + (f.costs || 0), 0));
-  const sym = state.symbols[selectedSymbol];
-  const progress = sym ? ((sym.cursor + 1) / Math.max(1, sym.total_bars)) * 100 : 0;
-  document.getElementById("progressPct").textContent = `${progress.toFixed(1)}%`;
 
   renderConfig();
   renderSymbolSelect(symbols);
@@ -59,21 +76,57 @@ function render() {
   renderIndicators(state.symbols[selectedSymbol]);
   renderDepth(state.symbols[selectedSymbol]);
   renderFills();
-  renderActivity();
+  renderCapitalAndTrades();
 }
 
 function renderConfig() {
   const list = document.getElementById("configList");
-  const entries = {
-    Symbols: state.config.symbols.join(", "),
-    Strategy: state.config.strategy,
-    Period: state.config.period,
-    Interval: state.config.interval,
-    Speed: `${state.config.tick_seconds}s/bar`,
-    Loop: state.config.loop ? "on" : "off",
-    Intelligence: state.config.use_intelligence_filter ? "on" : "off",
-  };
+  const isLive = state.mode === "live";
+  const entries = isLive
+    ? {
+        Mode: "live",
+        "Trade watchlist": (state.config.trade_symbols || state.config.symbols || []).join(", "),
+        Strategy: state.config.strategy,
+        Period: state.config.period,
+        Interval: state.config.interval,
+        Poll: `${state.config.poll_seconds}s`,
+        Intelligence: state.config.use_intelligence_filter ? "on" : "off",
+      }
+    : {
+        Symbols: state.config.symbols.join(", "),
+        Strategy: state.config.strategy,
+        Period: state.config.period,
+        Interval: state.config.interval,
+        Speed: `${state.config.tick_seconds}s/bar`,
+        Loop: state.config.loop ? "on" : "off",
+        Intelligence: state.config.use_intelligence_filter ? "on" : "off",
+      };
   list.innerHTML = Object.entries(entries).map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
+}
+
+let marketFilter = "";
+
+function renderMarketScreener() {
+  const rows = state.market_universe || [];
+  const query = marketFilter.trim().toLowerCase();
+  const filtered = query
+    ? rows.filter((row) => `${row.symbol} ${row.name || ""}`.toLowerCase().includes(query))
+    : rows;
+  document.getElementById("marketBody").innerHTML = filtered.map((row) => {
+    const tone = row.change_pct > 0 ? "positive" : row.change_pct < 0 ? "negative" : "neutral";
+    return `
+      <tr>
+        <td><strong>${escapeHtml(row.symbol)}</strong></td>
+        <td>${escapeHtml(row.name || "--")}</td>
+        <td>${fmt.format(row.ltp)}</td>
+        <td class="${tone}">${Number(row.change_pct || 0).toFixed(2)}%</td>
+        <td>${fmt.format(row.open)}</td>
+        <td>${fmt.format(row.high)}</td>
+        <td>${fmt.format(row.low)}</td>
+        <td>${fmt.format(row.volume)}</td>
+      </tr>
+    `;
+  }).join("");
 }
 
 function renderSymbolSelect(symbols) {
@@ -198,11 +251,74 @@ function renderFills() {
   `).join("");
 }
 
-function renderActivity() {
-  const box = document.getElementById("activity");
-  box.innerHTML = (state.events || []).slice().reverse().map(e => `
-    <div class="event ${e.kind}"><time>${new Date(e.time).toLocaleString()}</time>${e.message}</div>
-  `).join("");
+function signedInr(value) {
+  const amount = Number(value || 0);
+  return `${amount >= 0 ? "+" : "-"}${inr(Math.abs(amount))}`;
+}
+
+function pnlTone(value) {
+  const amount = Number(value || 0);
+  if (amount > 0) return "positive";
+  if (amount < 0) return "negative";
+  return "neutral";
+}
+
+function renderCapitalAndTrades() {
+  const stats = state.trade_pnl_stats || {};
+  const capital = stats.capital || {};
+  const ledger = stats.ledger || [];
+
+  document.getElementById("capitalGrid").innerHTML = `
+    <article><span>Total capital deployed</span><strong>${inr(capital.total_capital_deployed_inr)}</strong><small>All BUY fills</small></article>
+    <article><span>Currently invested</span><strong>${inr(capital.currently_invested_inr)}</strong><small>Open cost basis</small></article>
+    <article><span>Open market value</span><strong>${inr(capital.open_market_value_inr)}</strong><small>Mark-to-market</small></article>
+    <article><span>Realized P&amp;L</span><strong class="${pnlTone(capital.realized_pnl_inr)}">${signedInr(capital.realized_pnl_inr)}</strong><small>Closed round trips</small></article>
+    <article><span>Unrealized P&amp;L</span><strong class="${pnlTone(capital.unrealized_pnl_inr)}">${signedInr(capital.unrealized_pnl_inr)}</strong><small>Open positions</small></article>
+    <article><span>Available cash</span><strong>${inr(state.portfolio.cash)}</strong><small>Paper broker cash</small></article>
+  `;
+
+  const box = document.getElementById("tradeLedger");
+  if (!ledger.length) {
+    box.innerHTML = '<div class="ledger-empty">No executed trades yet.</div>';
+    return;
+  }
+  box.innerHTML = ledger.map((entry) => renderLedgerItem(entry)).join("");
+}
+
+function renderLedgerItem(entry) {
+  const isBuy = entry.side === "BUY";
+  const outcome = entry.outcome || entry.side;
+  const outcomeClass = outcome === "PROFIT" ? "ok" : outcome === "LOSS" ? "bad" : isBuy ? "buy" : "warn";
+  const detail = isBuy
+    ? `<strong>${inr(entry.capital_inr)}</strong> capital deployed`
+    : entry.pnl_inr == null
+      ? `<strong>${inr(entry.proceeds_inr)}</strong> proceeds`
+      : `<strong class="${pnlTone(entry.pnl_inr)}">${signedInr(entry.pnl_inr)}</strong> ${entry.label.toLowerCase()} · ${Number(entry.return_pct || 0).toFixed(2)}%`;
+
+  return `
+    <article class="ledger-item ${isBuy ? "buy" : "sell"}">
+      <div class="ledger-top">
+        <span class="pill ${outcomeClass}">${entry.side}</span>
+        <strong>${escapeHtml(entry.symbol)}</strong>
+        <span class="ledger-qty">${entry.quantity} @ ${fmt.format(entry.price_inr)}</span>
+      </div>
+      <div class="ledger-body">
+        <time>${new Date(entry.timestamp).toLocaleString()}</time>
+        <div>${detail}</div>
+        <small>Costs ${inr(entry.costs_inr)}</small>
+      </div>
+    </article>
+  `;
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[char]);
 }
 
 document.getElementById("symbolSelect").addEventListener("change", (event) => {
@@ -216,6 +332,10 @@ document.getElementById("copySnapshot").addEventListener("click", async () => {
   const res = await fetch("/api/ai-snapshot");
   const text = JSON.stringify(await res.json(), null, 2);
   await navigator.clipboard.writeText(text);
+});
+document.getElementById("marketSearch")?.addEventListener("input", (event) => {
+  marketFilter = event.target.value;
+  renderMarketScreener();
 });
 
 connect();

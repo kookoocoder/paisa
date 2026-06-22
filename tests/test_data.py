@@ -1,6 +1,10 @@
-import pandas as pd
+import os
+from pathlib import Path
 
-from paisa_trader.data import _normalize_upstox_candles, candle_path, upstox_instrument_key
+import pandas as pd
+import pytest
+
+from paisa_trader.data import _normalize_upstox_candles, candle_path, download_candles, resolve_instrument_key, upstox_instrument_key
 
 
 def test_upstox_instrument_key_resolves_nse_symbol():
@@ -14,6 +18,16 @@ def test_upstox_instrument_key_resolves_nse_symbol():
     ]
 
     assert upstox_instrument_key("RELIANCE.NS", instruments) == "NSE_EQ|INE002A01018"
+
+
+def test_resolve_instrument_key_nifty():
+    assert resolve_instrument_key("NIFTY50") == "NSE_INDEX|Nifty 50"
+    assert resolve_instrument_key("^NSEI") == "NSE_INDEX|Nifty 50"
+
+
+def test_resolve_instrument_key_equity():
+    assert resolve_instrument_key("RELIANCE") == "NSE_EQ|INE002A01018"
+    assert resolve_instrument_key("RELIANCE.NS") == "NSE_EQ|INE002A01018"
 
 
 def test_upstox_instrument_key_accepts_raw_key():
@@ -54,6 +68,23 @@ def test_normalize_upstox_candles_accepts_dict_schema():
     assert candles.iloc[0]["volume"] == 12345
 
 
-def test_candle_path_keeps_yfinance_names_compatible():
-    assert candle_path("RELIANCE.NS", "5d", "5m").name == "RELIANCE.NS__5d__5m.parquet"
-    assert candle_path("RELIANCE.NS", "5d", "5m", "upstox").name == "upstox__RELIANCE.NS__5d__5m.parquet"
+def test_candle_path_uses_upstox_interval_names():
+    assert candle_path("RELIANCE", "5d", "5m").name == "RELIANCE__5d__5minute.parquet"
+    assert candle_path("RELIANCE", "5d", "5minute").name == "RELIANCE__5d__5minute.parquet"
+
+
+def test_download_candles_returns_correct_columns():
+    if not os.getenv("UPSTOX_ANALYTICS_TOKEN"):
+        pytest.skip("UPSTOX_ANALYTICS_TOKEN not set")
+    df = download_candles("RELIANCE", period="5d", interval="5minute")
+    assert list(df.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert df.index.tz is not None
+
+
+def test_interval_string_format():
+    offenders = []
+    for path in (Path(__file__).resolve().parents[1] / "src").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "interval=\"5m\"" in text or "interval='5m'" in text or "interval=\"1h\"" in text or "interval='1h'" in text:
+            offenders.append(str(path))
+    assert offenders == []

@@ -1,3 +1,9 @@
+[data]
+default_source = "upstox"
+default_interval = "5minute"
+default_period = "5d"
+token_env_var = "UPSTOX_ANALYTICS_TOKEN"
+
 [ai_harness]
 model_provider = "lmstudio"
 model_name = "auto"
@@ -5,7 +11,20 @@ api_key_env = ""
 temperature = 0.1
 max_tokens = 512
 local_url = "http://127.0.0.1:1234"
-decision_min_confidence = 0.65
+decision_min_confidence = 0.55
 position_size_pct = 0.01
-symbols = ["RELIANCE.NS", "TCS.NS", "INFY.NS"]
+symbols = ["RELIANCE", "TCS", "INFY"]
 bar_interval_sec = 5
+
+[ml]
+enabled = true
+model_dir = "models/"
+min_confidence = 0.55
+use_arima_tiebreaker = true
+arima_order = [2, 1, 2]
+
+[sentiment]
+enabled = true
+model = "ProsusAI/finbert"
+fallback_on_error = true
+batch_size = 1

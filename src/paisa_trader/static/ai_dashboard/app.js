@@ -41,7 +41,9 @@ function render() {
   renderHeader(symbols, latest);
   renderChart(symbolState);
   renderLatestDecision(latest);
-  renderPredictionTable(decisions);
+  renderPredictionTable(visibleDecisions(decisions));
+  renderCapitalAndTrades();
+  renderTradePnl();
   renderFills();
 }
 
@@ -58,7 +60,9 @@ function renderHeader(symbols, latest) {
     `${stats.hits || 0} hits / ${stats.misses || 0} misses · ${stats.settled || 0} checked`;
   document.getElementById("latestAction").textContent = latest ? latest.action : "--";
   document.getElementById("latestActionDetail").textContent = latest
-    ? `${Math.round((latest.confidence || 0) * 100)}% · ${latest.route_reason || "not routed"}`
+    ? latest.fill
+      ? `${latest.fill.side} ${latest.fill.quantity} filled`
+      : `${Math.round((latest.confidence || 0) * 100)}% · no trade`
     : "waiting";
   document.getElementById("modelName").textContent = `${state.config.model_provider}/${state.config.model_name}`;
   document.getElementById("decisionCount").textContent = `${(state.ai_decisions || []).length} decisions`;
@@ -112,15 +116,25 @@ function renderLatestDecision(decision) {
     </div>
     <p>${escapeHtml(decision.reasoning || "No reasoning returned.")}</p>
     <dl>
-      <div><dt>Route</dt><dd>${escapeHtml(decision.route_reason || "--")}</dd></div>
+      <div><dt>Route</dt><dd>${decision.fill ? `${decision.fill.side} ${decision.fill.quantity} filled` : "No trade executed"}</dd></div>
       <div><dt>Forecasts</dt><dd>${forecastSummaryText(decision)}</dd></div>
       <div><dt>Signals</dt><dd>${(decision.key_signals || []).map(escapeHtml).join(", ") || "--"}</dd></div>
     </dl>
   `;
 }
 
+function visibleDecisions(decisions) {
+  return decisions.filter((decision) => !isBlockedDecision(decision));
+}
+
+function isBlockedDecision(decision) {
+  if (decision.fill) return false;
+  const reason = String(decision.route_reason || "").toUpperCase();
+  return reason.startsWith("BLOCKED") || decision.route_accepted === false;
+}
+
 function renderPredictionTable(decisions) {
-  const rows = decisions.slice().reverse().slice(0, 12);
+  const rows = visibleDecisions(decisions).slice().reverse().slice(0, 12);
   if (!rows.length) {
     document.getElementById("predictionTable").innerHTML = "<p class='muted'>No forecasts yet.</p>";
     return;
@@ -141,6 +155,124 @@ function renderPredictionTable(decisions) {
       </tbody>
     </table>
   `;
+}
+
+function renderCapitalAndTrades() {
+  const stats = state.trade_pnl_stats || {};
+  const capital = stats.capital || {};
+  const ledger = stats.ledger || [];
+
+  document.getElementById("capitalGrid").innerHTML = `
+    <article><span>Total capital deployed</span><strong>${inr(capital.total_capital_deployed_inr)}</strong><small>All BUY fills</small></article>
+    <article><span>Currently invested</span><strong>${inr(capital.currently_invested_inr)}</strong><small>Open cost basis</small></article>
+    <article><span>Open market value</span><strong>${inr(capital.open_market_value_inr)}</strong><small>Mark-to-market</small></article>
+    <article><span>Realized P&amp;L</span><strong class="${pnlTone(capital.realized_pnl_inr)}">${signedInr(capital.realized_pnl_inr)}</strong><small>Closed round trips</small></article>
+    <article><span>Unrealized P&amp;L</span><strong class="${pnlTone(capital.unrealized_pnl_inr)}">${signedInr(capital.unrealized_pnl_inr)}</strong><small>Open positions</small></article>
+    <article><span>Available cash</span><strong>${inr(state.portfolio.cash)}</strong><small>Paper broker cash</small></article>
+  `;
+
+  const box = document.getElementById("tradeLedger");
+  if (!ledger.length) {
+    box.innerHTML = '<div class="ledger-empty">No executed trades yet.</div>';
+    return;
+  }
+  box.innerHTML = ledger.map((entry) => renderLedgerItem(entry)).join("");
+}
+
+function renderLedgerItem(entry) {
+  const isBuy = entry.side === "BUY";
+  const outcome = entry.outcome || entry.side;
+  const outcomeClass = outcome === "PROFIT" ? "ok" : outcome === "LOSS" ? "bad" : isBuy ? "buy" : "warn";
+  const detail = isBuy
+    ? `<strong>${inr(entry.capital_inr)}</strong> capital deployed`
+    : entry.pnl_inr == null
+      ? `<strong>${inr(entry.proceeds_inr)}</strong> proceeds`
+      : `<strong class="${pnlTone(entry.pnl_inr)}">${signedInr(entry.pnl_inr)}</strong> ${entry.label.toLowerCase()} · ${Number(entry.return_pct || 0).toFixed(2)}%`;
+
+  return `
+    <article class="ledger-item ${isBuy ? "buy-side" : "sell-side"}">
+      <div class="ledger-top">
+        <span class="pill ${outcomeClass}">${entry.side}</span>
+        <strong>${escapeHtml(entry.symbol)}</strong>
+        <span class="ledger-qty">${entry.quantity} @ ${fmt.format(entry.price_inr)}</span>
+      </div>
+      <div class="ledger-body">
+        <time>${new Date(entry.timestamp).toLocaleString()}</time>
+        <div>${detail}</div>
+        <small>Costs ${inr(entry.costs_inr)}</small>
+      </div>
+    </article>
+  `;
+}
+
+function renderTradePnl() {
+  const stats = state.trade_pnl_stats || {};
+  const overall = stats.overall || {};
+  const portfolio = stats.portfolio || {};
+  const profitFactor = overall.profit_factor;
+  document.getElementById("pnlMetrics").innerHTML = `
+    <article><span>Closed trades</span><strong>${overall.closed_trades || 0}</strong></article>
+    <article><span>Win rate</span><strong>${((overall.win_rate || 0) * 100).toFixed(1)}%</strong><small>${overall.winning_trades || 0} wins / ${overall.losing_trades || 0} losses</small></article>
+    <article><span>Realized P&amp;L</span><strong class="${pnlTone(portfolio.realized_pnl_inr)}">${signedInr(portfolio.realized_pnl_inr)}</strong></article>
+    <article><span>Unrealized P&amp;L</span><strong class="${pnlTone(portfolio.unrealized_pnl_inr)}">${signedInr(portfolio.unrealized_pnl_inr)}</strong></article>
+    <article><span>Total costs</span><strong>${inr(overall.total_costs_inr)}</strong></article>
+    <article><span>Expectancy / trade</span><strong class="${pnlTone(overall.expectancy_inr)}">${signedInr(overall.expectancy_inr)}</strong><small>Profit factor ${profitFactor == null ? "n/a" : profitFactor.toFixed(2)}</small></article>
+  `;
+
+  const bySymbol = Object.entries(stats.by_symbol || {});
+  document.getElementById("pnlBySymbolBody").innerHTML = bySymbol.length
+    ? bySymbol.map(([symbol, row]) => `
+      <tr>
+        <td>${escapeHtml(symbol)}</td>
+        <td>${row.closed_trades || 0}</td>
+        <td>${((row.win_rate || 0) * 100).toFixed(1)}%</td>
+        <td class="${pnlTone(row.net_pnl_inr)}">${signedInr(row.net_pnl_inr)}</td>
+        <td class="${pnlTone((row.open || {}).unrealized_pnl_inr)}">${signedInr((row.open || {}).unrealized_pnl_inr || 0)}</td>
+      </tr>
+    `).join("")
+    : "<tr><td colspan='5' class='muted'>No closed round trips yet.</td></tr>";
+
+  const openPositions = Object.entries(stats.open_positions || {});
+  document.getElementById("pnlOpenBody").innerHTML = openPositions.length
+    ? openPositions.map(([symbol, row]) => `
+      <tr>
+        <td>${escapeHtml(symbol)}</td>
+        <td>${row.quantity || 0}</td>
+        <td>${fmt.format(row.mark_price_inr || 0)}</td>
+        <td>${inr(row.cost_basis_inr)}</td>
+        <td class="${pnlTone(row.unrealized_pnl_inr)}">${signedInr(row.unrealized_pnl_inr)}</td>
+      </tr>
+    `).join("")
+    : "<tr><td colspan='5' class='muted'>No open paper positions.</td></tr>";
+
+  const roundTrips = stats.round_trips || [];
+  document.getElementById("pnlRoundTripsBody").innerHTML = roundTrips.length
+    ? roundTrips.slice().reverse().map((trade) => `
+      <tr>
+        <td>${escapeHtml(trade.symbol)}</td>
+        <td>${formatDate(trade.entry_time)}</td>
+        <td>${formatDate(trade.exit_time)}</td>
+        <td>${trade.quantity}</td>
+        <td>${fmt.format(trade.entry_price)}</td>
+        <td>${fmt.format(trade.exit_price)}</td>
+        <td class="${pnlTone(trade.net_pnl_inr)}">${signedInr(trade.net_pnl_inr)}</td>
+        <td>${Number(trade.return_pct || 0).toFixed(2)}%</td>
+        <td><span class="pill ${trade.result === "WIN" ? "ok" : trade.result === "LOSS" ? "bad" : "warn"}">${trade.result}</span></td>
+      </tr>
+    `).join("")
+    : "<tr><td colspan='9' class='muted'>No closed round trips yet.</td></tr>";
+}
+
+function signedInr(value) {
+  const amount = Number(value || 0);
+  return `${amount >= 0 ? "+" : "-"}${inr(Math.abs(amount))}`;
+}
+
+function pnlTone(value) {
+  const amount = Number(value || 0);
+  if (amount > 0) return "buy";
+  if (amount < 0) return "sell";
+  return "muted";
 }
 
 function renderFills() {
